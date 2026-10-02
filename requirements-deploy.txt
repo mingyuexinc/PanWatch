@@ -1,0 +1,33 @@
+# -*- coding: utf-8 -*-
+# 部署镜像(deploy/Dockerfile)专用:在 requirements-runtime.txt 基础上实测精简。
+# 判定标准:全仓 grep 实际 import(含函数内懒加载)+ 容器冒烟测试通过。
+# 与 requirements-runtime.txt 的差异(勿回填,上游文件保持不动):
+# - 移除 tradingagents(git 安装,连带 langchain/langgraph 等约 115 个包,
+#   占镜像体积大头;代码为懒加载,缺失时 Agent 显示"未安装"并优雅降级)。
+# - 移除 efinance(全仓零 import,仅存于注释)、tenacity / pyyaml(零 import)。
+# - 移除 xhtml2pdf(仅当 WeasyPrint 缺系统库时的 PDF 回退;部署镜像装有
+#   pango/cairo + 中文字体,主引擎必可用,回退分支不会触发,连带省掉
+#   reportlab/pypdf)。
+# - 显式补充 markdown / requests(app 直接 import,此前靠 apprise 传递安装)。
+apprise>=1.6.0
+openai>=1.0.0
+akshare>=1.10.0
+apscheduler>=3.10.0
+httpx>=0.25.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+certifi
+fastapi>=0.104.0
+uvicorn>=0.24.0
+sqlalchemy>=2.0.0
+playwright==1.57.0
+PyJWT>=2.8.0
+markdown
+requests
+weasyprint>=60
+
+# 本仓内本地包(editable 本地开发;镜像内 sed 去 -e 后正常安装)
+-e ./packages/marketdata
+-e ./packages/pan-agent-runtime
+-e ./packages/pan-agent-token-meter
+-e ./packages/pan-agent-tool-research

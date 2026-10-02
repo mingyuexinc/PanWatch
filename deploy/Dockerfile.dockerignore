@@ -1,0 +1,45 @@
+# deploy/Dockerfile 的专用 ignore(BuildKit 规则:存在时整体取代根 .dockerignore)。
+# 与根 .dockerignore 的唯一关键差异:放行 frontend/dist(镜像内不构建前端)。
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# 前端:仅放行 dist,其余源码/依赖不进上下文
+frontend/*
+!frontend/dist
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 数据(镜像只带空 /app/data 目录)
+data/
+*.db
+*.sqlite
+
+# Docs / CI / 测试:运行镜像不需要
+.claude/
+docs/
+.github/
+tests/
+.pytest_cache/
+*.md
+!README.md
+# 本地包 pyproject 声明了 readme,缺失会导致 wheel 构建失败
+!packages/*/README.md
+
+# Misc
+.env
+.env.*
+*.log

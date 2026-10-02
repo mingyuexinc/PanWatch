@@ -1,4 +1,4 @@
-.PHONY: help setup-backend dev-api dev-web build test test-notify eval doctor install-hooks clean-venv
+.PHONY: help setup-backend dev-api dev-web build build-deploy test test-notify eval doctor install-hooks clean-venv
 
 # 端口约定：
 #   - 后端：:8000（Docker / 本地 dev 统一，避免存量用户升级困惑）
@@ -97,6 +97,12 @@ else
 	fi
 	./build.sh $(VERSION)
 endif
+
+# 部署精简镜像(上游镜像之外的自用变体,见 deploy/Dockerfile)
+# 用法: make build-deploy [VERSION=0.3.0]
+build-deploy:
+	@corepack pnpm --dir frontend build
+	docker build -f deploy/Dockerfile --build-arg VERSION="$(if $(VERSION),$(VERSION),dev-deploy)" -t panwatch:deploy .
 
 install-hooks:
 	bash scripts/install-hooks.sh
