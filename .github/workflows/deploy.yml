@@ -1,0 +1,168 @@
+name: Deploy container
+
+# 部署链路:构建(含前端 dist)→ 容器冒烟 → 推 GHCR → SSH 部署到生产。
+# 借鉴 Stock-Agent container.yml,并针对其踩过的阻塞点加固:
+#  1. preflight 在构建前秒级验证 SSH/sudo/docker/GHCR 连通性(stock-agent
+#     当时连跑 4 个提交才定位到 sudo 授权与 GHCR 拉取认证问题);
+#  2. 所有 ssh 带 ConnectTimeout/BatchMode/ServerAlive,网络黑洞时按超时
+#     失败而不是挂满 6 小时 job 上限;
+#  3. concurrency 排队不取消,避免连续 push 并发部署互踩;
+#  4. 部署脚本带回滚与有界健康等待,见 deploy/panwatch-deploy.sh。
+# 首次启用:服务器侧完成三件套第三步后,在仓库 Variables 设置
+# DEPLOY_ENABLED=true(未设置时只构建+冒烟+推送,不部署,不会红灯阻塞)。
+
+on:
+  push:
+    branches:
+      - deploy/main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/mingyuexinc/panwatch
+
+jobs:
+  preflight:
+    name: Preflight deployment host (fail fast)
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe SSH, sudo bash, docker and ghcr.io reachability
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+          # BatchMode 禁止交互式密码提示(会挂死);ghcr.io 返回 401 即视为可达。
+          ssh -p "$DEPLOY_PORT" \
+            -o ConnectTimeout=10 -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n /usr/bin/bash -c 'set -e; echo \"sudo-bash: uid=\$(id -u)\"; docker info --format \"docker: {{.ServerVersion}}\"; curl -sI --max-time 10 https://ghcr.io/v2/ | head -n 1'"
+
+  build:
+    name: Build, smoke and push image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build frontend dist
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build deploy image (load locally)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image (imports, PDF, screenshot, HTTP startup)
+        run: |
+          docker run --rm -v "$PWD:/checks:ro" \
+            "${IMAGE_NAME}:${GITHUB_SHA}" \
+            python /checks/scripts/docker_smoke_deploy.py
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        run: |
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+          docker push "${IMAGE_NAME}:stable"
+
+  deploy:
+    name: Deploy production image
+    needs: [build, preflight]
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure deployment SSH
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Upload deployment script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          scp -P "$DEPLOY_PORT" \
+            -o ConnectTimeout=10 -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            deploy/panwatch-deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/panwatch-deploy-${GITHUB_SHA}.sh"
+
+      - name: Deploy image and recreate service
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_script="/tmp/panwatch-deploy-${GITHUB_SHA}.sh"
+          # GHCR 私有包:用本工作流的短期 GITHUB_TOKEN 登录服务器 docker,
+          # 拉取后立刻 logout,token 不落盘(stock-agent 已验证该模式)。
+          printf '%s\n' "$GHCR_TOKEN" | \
+            ssh -p "$DEPLOY_PORT" \
+              -o ConnectTimeout=10 -o BatchMode=yes \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo /usr/bin/bash -c 'docker login ghcr.io --username github-actions --password-stdin && bash \"$remote_script\" \"$GITHUB_SHA\"; status=\$?; docker logout ghcr.io >/dev/null 2>&1 || true; exit \$status'; status=\$?; rm -f '$remote_script'; exit \$status"

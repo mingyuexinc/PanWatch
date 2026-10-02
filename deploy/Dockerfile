@@ -101,7 +101,9 @@ ENV TZ=Asia/Shanghai
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# start-period 给首启下载 Chromium(~170MB 到 /app/data/playwright)留宽限,
+# 期间探测失败不计入 retries;就绪后首个成功探测立即转 healthy。
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
 # 启动命令
