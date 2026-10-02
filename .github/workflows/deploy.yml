@@ -87,7 +87,9 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
-          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:stable
           build-args: |
             VERSION=${{ github.sha }}
           cache-from: type=gha
