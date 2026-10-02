@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 import threading
 import time
@@ -394,6 +394,31 @@ def _find_cross_days(
     return None
 
 
+def _completed_day_closes(
+    klines: list[KlineData], market: MarketCode, now: datetime | None = None
+) -> list[float]:
+    """已完成交易日收盘序列(时间升序,末尾=最近一个已完成交易日)。
+
+    盘中腾讯日K的末根是当日实时bar(未定稿,随现价滚动),滚动均线类
+    条件不得使用:当末根日期为市场本地"今日"且尚未到当日收盘时刻时,
+    剔除该bar。收盘后当日bar已定稿,照常保留。
+    """
+    if not klines:
+        return []
+    md = MARKETS.get(market)
+    if md is None:
+        return [k.close for k in klines]
+    local_now = now.astimezone(md.get_tz()) if now else datetime.now(md.get_tz())
+    sessions = md.sessions or []
+    last_end = sessions[-1].end if sessions else time(15, 0)
+    in_progress = (
+        str(klines[-1].date)[:10] == local_now.date().isoformat()
+        and local_now.time() < last_end
+    )
+    bars = klines[:-1] if in_progress else klines
+    return [k.close for k in bars]
+
+
 class KlineCollector:
     """K线数据采集器（腾讯 API）"""
 
@@ -724,6 +749,8 @@ class KlineCollector:
                 "support_resistance": {"windows": [5, 20, 60]},
             },
             "last_close": last_close,
+            # 已完成交易日收盘(升序,最多60根):滚动均线(ma)条件的确定性输入
+            "prev_day_closes": _completed_day_closes(klines, self.market)[-60:],
             "recent_5_up": up_days,
             "trend": trend,
             # MACD

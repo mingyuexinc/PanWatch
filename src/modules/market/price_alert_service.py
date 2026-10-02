@@ -14,8 +14,11 @@ from sqlalchemy.orm import Session
 from src.platform.persistence.models import PriceAlertHit, PriceAlertRule, Stock
 
 
-ALERT_CONDITION_TYPES = {"price", "change_pct", "turnover", "volume", "volume_ratio"}
+ALERT_CONDITION_TYPES = {"price", "change_pct", "turnover", "volume", "volume_ratio", "ma"}
 ALERT_CONDITION_OPERATORS = {">=", "<=", ">", "<", "==", "=", "!=", "<>", "between", "in"}
+# ma 条件的 value 语义是均线周期N(与现价比较的是滚动均线值),不是阈值。
+MA_PERIOD_MIN = 2
+MA_PERIOD_MAX = 60
 
 
 def validate_condition_group(group: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +47,17 @@ def validate_condition_group(group: dict[str, Any]) -> dict[str, Any]:
             not isinstance(value, list) or len(value) != 2
         ):
             raise ValueError(f"{condition_type} 的 {operator} 需要两个值")
+        if condition_type == "ma":
+            if operator in {"between", "in"}:
+                raise ValueError("ma 条件仅支持价格与均线的比较运算符,不支持 between/in")
+            try:
+                period = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("ma 条件的 value 必须是均线周期整数") from exc
+            if period != int(period) or not (MA_PERIOD_MIN <= int(period) <= MA_PERIOD_MAX):
+                raise ValueError(
+                    f"ma 条件的均线周期必须是 {MA_PERIOD_MIN}-{MA_PERIOD_MAX} 的整数"
+                )
         normalized_items.append(
             {"type": condition_type, "op": operator, "value": value}
         )

@@ -1,0 +1,48 @@
+{
+  "symbol": "002437",
+  "name": "誉衡药业",
+  "replay_date": "2026-09-30",
+  "rule": {
+    "condition": "现价 >= 当日滚动5日线",
+    "repeat_mode": "once(仅首次捕获)",
+    "scan_interval_sec": 60
+  },
+  "ma_base": {
+    "prev_trading_day_closes": [
+      3.64,
+      3.5,
+      3.45,
+      3.47
+    ],
+    "equivalent_threshold": 3.515,
+    "note": "现价>=5日线 ⟺ 现价>=前4日收盘均值(当日常数)"
+  },
+  "data_truth": {
+    "open": 3.48,
+    "open_above_threshold": false,
+    "first_touch_time": "2026-09-30 09:33:00",
+    "first_touch_high": 3.53,
+    "first_minute_close_above_time": "2026-09-30 09:34:00"
+  },
+  "engine_capture": {
+    "scan_time": "2026-09-30 09:34:00",
+    "price": 3.52,
+    "ma5": 3.516,
+    "scan_clock": "60s节拍, 对齐分钟收盘时刻"
+  },
+  "near_event_trace": [
+    {
+      "ts": "2026-09-30 09:33:00",
+      "close": 3.49,
+      "matched": false
+    },
+    {
+      "ts": "2026-09-30 09:34:00",
+      "close": 3.52,
+      "ma5": 3.516,
+      "matched": true
+    }
+  ],
+  "day_close": 3.65,
+  "bars_replayed": 241
+}

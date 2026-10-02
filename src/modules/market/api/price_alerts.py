@@ -32,9 +32,13 @@ def _format_datetime(dt) -> str:
 
 
 class AlertConditionItem(BaseModel):
-    type: str = Field(..., description="price/change_pct/turnover/volume/volume_ratio")
-    op: str = Field(..., description=">=/<=/>/</==/between")
-    value: float | list[float] = Field(..., description="阈值")
+    type: str = Field(
+        ..., description="price/change_pct/turnover/volume/volume_ratio/ma"
+    )
+    op: str = Field(..., description=">=/<=/>/</==/between(ma不支持between)")
+    value: float | list[float] = Field(
+        ..., description="阈值; ma 类型为均线周期N(2-60,现价与滚动均线比较)"
+    )
 
 
 class AlertConditionGroup(BaseModel):

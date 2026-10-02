@@ -71,7 +71,7 @@ function fmt(iso?: string | null): string {
 
 function conditionText(item: AlertConditionItem, translate: (key: string) => string): string {
   const TYPE_LABEL: Record<string, string> = {
-    price: translate('conditions.price'), change_pct: translate('conditions.change_pct'), turnover: translate('conditions.turnover'), volume: translate('conditions.volume'), volume_ratio: translate('conditions.volume_ratio'),
+    price: translate('conditions.price'), change_pct: translate('conditions.change_pct'), turnover: translate('conditions.turnover'), volume: translate('conditions.volume'), volume_ratio: translate('conditions.volume_ratio'), ma: translate('conditions.ma'),
   }
   if (item.op === 'between' && Array.isArray(item.value)) {
     return `${TYPE_LABEL[item.type] || item.type} ∈ [${item.value[0]}, ${item.value[1]}]`

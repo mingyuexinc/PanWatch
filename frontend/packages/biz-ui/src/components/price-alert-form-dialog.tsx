@@ -7,7 +7,7 @@ import { Button } from '@panwatch/base-ui/components/ui/button'
 import { useTranslation } from 'react-i18next'
 
 export type RuleOp = 'and' | 'or'
-export type ConditionType = 'price' | 'change_pct' | 'turnover' | 'volume' | 'volume_ratio'
+export type ConditionType = 'price' | 'change_pct' | 'turnover' | 'volume' | 'volume_ratio' | 'ma'
 export type ConditionOp = '>=' | '<=' | '>' | '<' | '==' | 'between'
 
 export interface AlertConditionItem {
@@ -92,7 +92,7 @@ export default function PriceAlertFormDialog(props: {
       options,
     )
   const typeLabel: Record<ConditionType, string> = {
-    price: alertT('conditions.price'), change_pct: alertT('conditions.change_pct'), turnover: alertT('conditions.turnover'), volume: alertT('conditions.volume'), volume_ratio: alertT('conditions.volume_ratio'),
+    price: alertT('conditions.price'), change_pct: alertT('conditions.change_pct'), turnover: alertT('conditions.turnover'), volume: alertT('conditions.volume'), volume_ratio: alertT('conditions.volume_ratio'), ma: alertT('conditions.ma'),
   }
   const stockOptions = useMemo(() => props.stocks, [props.stocks])
   const [form, setForm] = useState<PriceAlertFormState>(buildDefaultForm())
@@ -404,7 +404,16 @@ export default function PriceAlertFormDialog(props: {
             {form.items.map((it, idx) => (
               <div key={idx} className="grid grid-cols-12 gap-2">
                 <div className="col-span-4">
-                  <Select value={it.type} onValueChange={(v) => updateCond(idx, { type: v as ConditionType })}>
+                  <Select
+                    value={it.type}
+                    onValueChange={(v) =>
+                      updateCond(idx, {
+                        type: v as ConditionType,
+                        // ma 的 value 是均线周期,between 语义不适用
+                        ...(v === 'ma' && it.op === 'between' ? { op: '>=' as ConditionOp } : {}),
+                      })
+                    }
+                  >
                     <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {Object.entries(typeLabel).map(([k, label]) => (
@@ -422,7 +431,9 @@ export default function PriceAlertFormDialog(props: {
                       <SelectItem value=">">{'>'}</SelectItem>
                       <SelectItem value="<">{'<'}</SelectItem>
                       <SelectItem value="==">{'=='}</SelectItem>
-                      <SelectItem value="between">{bizUiT('stockPriceAlert.between')}</SelectItem>
+                      {it.type !== 'ma' && (
+                        <SelectItem value="between">{bizUiT('stockPriceAlert.between')}</SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -454,6 +465,7 @@ export default function PriceAlertFormDialog(props: {
                     <Input
                       className="h-8"
                       type="number"
+                      placeholder={it.type === 'ma' ? alertT('conditions.maPeriodHint') : undefined}
                       value={Array.isArray(it.value) ? String(it.value[0]) : String(it.value)}
                       onChange={(e) => updateCond(idx, { value: Number(e.target.value || 0) })}
                     />

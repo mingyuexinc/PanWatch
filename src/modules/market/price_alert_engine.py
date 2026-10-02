@@ -171,6 +171,38 @@ class PriceAlertEngine:
             if left is None:
                 summary = await self._get_kline_summary_cached(market, symbol)
                 left = _safe_float(summary.get("volume_ratio"))
+        elif ctype == "ma":
+            # 盘中滚动均线: MA(N) = (前N-1个已完成交易日收盘之和 + 现价) / N,
+            # "股价 >= 当日N日线"即现价与该滚动值比较;value 为均线周期 N。
+            price = _safe_float(quote.get("current_price"))
+            period = _safe_float(value)
+            if (
+                price is None
+                or period is None
+                or period != int(period)
+                or not (2 <= int(period) <= 60)
+            ):
+                return False, {"type": ctype, "error": "invalid_ma_params"}
+            n = int(period)
+            summary = await self._get_kline_summary_cached(market, symbol)
+            closes = summary.get("prev_day_closes") or []
+            if len(closes) < n - 1:
+                return False, {
+                    "type": ctype,
+                    "period": n,
+                    "error": "insufficient_history",
+                }
+            ma = round((sum(closes[-(n - 1):]) + price) / n, 6)
+            # 两侧统一取6位小数再比较,消除求和累积误差(如 3.515 == 3.515)。
+            ok = _op_eval(round(price, 6), op, ma)
+            return ok, {
+                "type": ctype,
+                "op": op,
+                "period": n,
+                "target": ma,
+                "actual": price,
+                "matched": ok,
+            }
         else:
             return False, {"type": ctype, "error": "unsupported_type"}
 
