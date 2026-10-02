@@ -9,6 +9,7 @@ export const navigation = {
     paperTrading: 'Paper trading',
     assistant: 'Assistant',
     alerts: 'Alerts',
+    monitorUniverse: 'Monitors',
     agents: 'Agents',
     evaluations: 'Evaluation',
     history: 'History',

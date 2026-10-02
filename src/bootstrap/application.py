@@ -30,6 +30,7 @@ from src.modules.market.api import (
     discovery,
     klines,
     market,
+    monitor_universe,
     news,
     price_alerts,
     quotes,
@@ -152,6 +153,12 @@ app.include_router(
     price_alerts.router,
     prefix="/api/price-alerts",
     tags=["price-alerts"],
+    dependencies=protected,
+)
+app.include_router(
+    monitor_universe.router,
+    prefix="/api/monitor-universe",
+    tags=["monitor-universe"],
     dependencies=protected,
 )
 app.include_router(

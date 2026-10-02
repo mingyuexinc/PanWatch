@@ -1171,6 +1171,38 @@ def register_mcp_log_cleanup(sched: AgentScheduler) -> None:
     logger.info("MCP 日志保留期清理任务已注册")
 
 
+def _sync_monitor_rules_job() -> None:
+    """监控池→MA监控规则同步(幂等;仅供调度器调用)。"""
+    from src.modules.market import monitor_universe_service
+    from src.platform.persistence.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        result = monitor_universe_service.sync_monitor_rules(db)
+        if any(result.values()):
+            logger.info(f"监控池规则同步: {result}")
+    except Exception:
+        logger.exception("监控池规则同步任务失败")
+    finally:
+        db.close()
+
+
+def register_monitor_universe_rearm(sched: AgentScheduler) -> None:
+    """每日 09:10(开盘前)重臂监控规则,使监控池成为当日/次日盘中监控集合。
+
+    同步是幂等的且只清除"非当日"的触发痕迹,进程重启后补跑同样安全。
+    """
+    sched.scheduler.add_job(
+        _sync_monitor_rules_job,
+        "cron",
+        hour=9,
+        minute=10,
+        id="monitor_universe_rearm",
+        replace_existing=True,
+    )
+    logger.info("监控池每日重臂任务已注册(09:10)")
+
+
 def reload_scheduler() -> bool:
     """重载调度器（用于配置导入/批量修改后立即生效）"""
     global scheduler
@@ -1572,6 +1604,15 @@ async def lifespan(app):
         register_mcp_log_cleanup(scheduler)
     except Exception as e:
         logger.error(f"MCP 日志清理任务注册失败: {e}")
+    # 监控池:每日 09:10 重臂 MA 监控规则;启动时补跑一次幂等同步
+    try:
+        register_monitor_universe_rearm(scheduler)
+    except Exception as e:
+        logger.error(f"监控池重臂任务注册失败: {e}")
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _sync_monitor_rules_job)
+    except Exception as e:
+        logger.error(f"监控池启动同步失败: {e}")
     try:
         # Preserve FastAPI's original lifespan, including registered recovery
         # hooks. Database initialization must precede this context.

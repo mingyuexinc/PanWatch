@@ -1000,6 +1000,30 @@ class PriceAlertHit(Base):
     stock = relationship("Stock")
 
 
+class MonitorUniverseItem(Base):
+    """监控池条目: 人工在看板维护的盘中监控股票集合。
+
+    看板对监控池的每次增删都会即时落库(自动保存),并同步生成/回收
+    对应的 MA 监控提醒规则;该集合即次日盘中的监控股票集合。
+    """
+
+    __tablename__ = "monitor_universe_items"
+    __table_args__ = (
+        Index("ix_monitor_universe_stock", "stock_id"),
+        UniqueConstraint("stock_id", name="uq_monitor_universe_stock"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(
+        Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
+    )
+    note = Column(String, default="")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    stock = relationship("Stock")
+
+
 class PaperTradingAccount(Base):
     """模拟盘账户（单例）"""
 
