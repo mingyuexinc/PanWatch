@@ -33,6 +33,7 @@ jobs:
     name: Preflight deployment host (fail fast)
     if: vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
+    environment: production  # DEPLOY_* secrets 存于该 Environment,未声明的 job 取不到(首跑即栽在此)
     timeout-minutes: 3
     steps:
       - name: Probe SSH, sudo bash, docker and ghcr.io reachability
