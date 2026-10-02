@@ -31,3 +31,6 @@ CLAUDE.md
 docs/superpowers/
 .superpowers/
 .worktrees/
+
+# 本地调试令牌,禁止入库
+.demo_token

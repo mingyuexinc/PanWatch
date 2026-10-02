@@ -9,14 +9,23 @@ import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { useTranslation } from 'react-i18next'
 import { changeLocale, normalizeLocale } from '@/i18n'
 
+// 体验测试便利:仅在 Vite dev server(import.meta.env.DEV)下预填演示账号,
+// 生产构建不预填;可用 VITE_PREFILL_USERNAME / VITE_PREFILL_PASSWORD 覆盖。
+const DEV_PREFILL_USERNAME = import.meta.env.DEV
+  ? String(import.meta.env.VITE_PREFILL_USERNAME || 'demo')
+  : ''
+const DEV_PREFILL_PASSWORD = import.meta.env.DEV
+  ? String(import.meta.env.VITE_PREFILL_PASSWORD || 'demo1234')
+  : ''
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
   const { t, i18n: i18nInstance } = useTranslation(['auth', 'common', 'settings'])
   const currentLocale = normalizeLocale(i18nInstance.resolvedLanguage || i18nInstance.language)
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
+  const [username, setUsername] = useState(DEV_PREFILL_USERNAME)
+  const [password, setPassword] = useState(DEV_PREFILL_PASSWORD)
+  const [confirmPassword, setConfirmPassword] = useState(DEV_PREFILL_PASSWORD)
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [isSetup, setIsSetup] = useState(false)
