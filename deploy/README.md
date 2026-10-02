@@ -107,24 +107,35 @@ PanWatch 侧新增的防堵措施：
 手动触发：Actions → Deploy container → Run workflow（`DEPLOY_ENABLED=true`
 后为完整构建+部署链路）。
 
-## 第三步：服务器侧（待做）
+## 第三步：服务器侧 ✅（2026-10-02 实测）
 
-compose 常驻服务：镜像 `ghcr.io/mingyuexinc/panwatch`、`mem_limit: 384m`、
-数据卷挂 `/app/data`（DB + Playwright 浏览器 + 日志）、健康检查沿用镜像内
-`/api/health`。
+实际布局（与原计划的差异：**不经 Caddy**——80/443 由 CareerPass 的 Caddy 容器
+持有，给它加监听端口要动运行中的业务；PanWatch 改为独立端口直发，SPA 根路径
+反而更干净，无子路径问题）：
 
-生产环境变量文件 `/etc/panwatch/panwatch.env`（权限 600，不入仓库）：
+```text
+/etc/panwatch/panwatch.env     AUTH_USERNAME/AUTH_PASSWORD(600,root;值不入仓库)
+/etc/panwatch/image.env        部署脚本原子维护,记录当前生产镜像(完整 SHA)
+/srv/compose/panwatch/compose.yaml
+  服务 panwatch:mem_limit 384m、restart unless-stopped、数据卷 panwatch-data
+  → /app/data(DB+Playwright+日志)、双端口:127.0.0.1:8000(部署健康检查)
+  + 0.0.0.0:8081(公网入口)
+```
 
-- `AUTH_USERNAME` / `AUTH_PASSWORD`：首启自动建号（`auth.py`
-  `init_auth_from_env`，一次性播种，之后以 DB 为准）。**值已于 2026-10-02
-  裁定**（见会话记录 / 服务器 env 文件），公网可登录、前端监控池看板依赖
-  此账号。注意：env 播种路径不受网页端 6 位密码下限约束，改密走前端设置页。
-- `JWT_SECRET`（可选）：不设则首启自动生成并存入 DB（数据卷内，重启不变）。
+首次全自动部署（run 36967695168，2026-10-02）：preflight/build/deploy 三 job
+全绿；容器 healthy；`image.env` 写入完整 SHA；内存实测 267MiB/384MiB(69.6%，
+含首启 Chromium，截图高峰需观察)。服务器本机 E2E 已验证：`user` 账号登录
+→ JWT → `/api/monitor-universe` → 前端页面全部正常。
 
-Caddy 站点块要求：**独立站点（子域名或根路径），不要挂 `/panwatch/` 之类
-子路径**——vite 产物资源为绝对路径（`/assets/...`），子路径会 404；SPA
-fallback（非 API 路径回 `index.html`）后端已内置。反代到宿主机
-`127.0.0.1:8000`。
+公网访问：**阿里云轻量服务器防火墙需放行 TCP 8081**（云控制台操作，SSH
+不可达；放行前公网表现为连接超时）。访问地址 `http://8.133.216.96:8081/`。
+
+回滚：
+
+```bash
+sudo /usr/bin/bash -c "sed -i 's#^PANWATCH_IMAGE=.*#PANWATCH_IMAGE=ghcr.io/mingyuexinc/panwatch:<previous-sha>#' /etc/panwatch/image.env \
+  && PANWATCH_IMAGE=ghcr.io/mingyuexinc/panwatch:<previous-sha> docker compose --env-file /etc/panwatch/panwatch.env -f /srv/compose/panwatch/compose.yaml up -d --force-recreate --no-deps panwatch"
+```
 
 > 内存提示：首次启动会向 `/app/data/playwright` 下载 Chromium（约 170MB 磁盘），
 > 内存峰值超出 384m 时可设 `PLAYWRIGHT_SKIP_BROWSER_INSTALL=1` 放弃截图功能。
