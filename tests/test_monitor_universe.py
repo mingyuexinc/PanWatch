@@ -78,7 +78,40 @@ def test_list_universe_reports_rule_state_and_saved_at(db):
     assert row["symbol"] == "600519"
     assert row["rule_id"] is not None
     assert row["rule_enabled"] is True
+    assert row["rule_last_hit_notify_success"] is None
+    assert row["rule_last_hit_notify_error"] == ""
     assert payload["saved_at"] is not None
+
+
+def test_list_universe_exposes_latest_hit_notify_result(db):
+    item, _ = _add(db)
+    rule = _rules(db, item.stock_id)[0]
+    db.add(
+        PriceAlertHit(
+            rule_id=rule.id,
+            stock_id=item.stock_id,
+            trigger_time=datetime.now(timezone.utc) - timedelta(days=1),
+            trigger_bucket="202609300935",
+            trigger_snapshot={},
+            notify_success=True,
+        )
+    )
+    db.add(
+        PriceAlertHit(
+            rule_id=rule.id,
+            stock_id=item.stock_id,
+            trigger_time=datetime.now(timezone.utc),
+            trigger_bucket="202610080135",
+            trigger_snapshot={},
+            notify_success=False,
+            notify_error="没有可用的通知渠道",
+        )
+    )
+    db.commit()
+
+    row = svc.list_universe(db)["items"][0]
+    assert row["rule_last_hit_notify_success"] is False
+    assert row["rule_last_hit_notify_error"] == "没有可用的通知渠道"
 
 
 def test_remove_recycles_template_rule_and_hits(db):

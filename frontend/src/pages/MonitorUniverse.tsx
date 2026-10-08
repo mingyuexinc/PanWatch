@@ -8,11 +8,18 @@ import { useToast } from '@panwatch/base-ui/components/ui/toast'
 
 const SEARCH_DEBOUNCE_MS = 400
 
+// 后端时间为 naive UTC(isoformat 不带时区后缀)。直接 new Date() 会被浏览器
+// 按本地时区解释,A股盘中(UTC 00:00-15:59)触发的时间会被判成前一天。
+// 解析前统一补 Z;已带时区后缀(Z 或 ±hh:mm)的串保持原样。
+function parseServerDate(iso: string): Date {
+  const value = iso.includes('T') ? iso : iso.replace(' ', 'T')
+  return new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
+}
+
 function formatClock(iso: string | null): string {
   if (!iso) return '--:--:--'
   try {
-    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    return parseServerDate(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   } catch {
     return '--:--:--'
   }
@@ -21,8 +28,7 @@ function formatClock(iso: string | null): string {
 function formatDate(iso: string | null): string {
   if (!iso) return '-'
   try {
-    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
-    return d.toLocaleDateString()
+    return parseServerDate(iso).toLocaleDateString()
   } catch {
     return '-'
   }
@@ -31,7 +37,7 @@ function formatDate(iso: string | null): string {
 function isTodayUtc(iso: string | null): boolean {
   if (!iso) return false
   try {
-    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
+    const d = parseServerDate(iso)
     const now = new Date()
     return d.getUTCFullYear() === now.getUTCFullYear()
       && d.getUTCMonth() === now.getUTCMonth()
@@ -191,9 +197,14 @@ export default function MonitorUniversePage() {
 
   const ruleStatus = (item: MonitorUniverseItem): { key: string; tone: string } => {
     if (item.rule_id == null) return { key: 'status.missing', tone: 'text-muted-foreground' }
-    if (isTodayUtc(item.rule_last_trigger_at))
+    if (isTodayUtc(item.rule_last_trigger_at)) {
+      if (item.rule_last_hit_notify_success === false)
+        return { key: 'status.capturedPushFailed', tone: 'text-red-600 dark:text-red-400' }
       return { key: 'status.capturedToday', tone: 'text-emerald-600 dark:text-emerald-400' }
+    }
     if (item.rule_enabled) return { key: 'status.active', tone: 'text-primary' }
+    if (item.rule_last_hit_notify_success === false)
+      return { key: 'status.disabledPushFailed', tone: 'text-red-600 dark:text-red-400' }
     return { key: 'status.disabled', tone: 'text-amber-600 dark:text-amber-400' }
   }
 

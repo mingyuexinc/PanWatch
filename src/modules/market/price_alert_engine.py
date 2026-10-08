@@ -458,6 +458,15 @@ class PriceAlertEngine:
                 hit.notify_success = bool(notify_ok)
                 hit.notify_error = notify_err or ""
                 db.commit()
+                if not notify_ok:
+                    # 命中已落库但推送失败(如未配置默认通知渠道),ERROR 级别
+                    # 保证在日志里可见,不再只有命中表里的静默记录。
+                    logger.error(
+                        "[价格提醒] 规则#%s(%s) 已命中但推送失败: %s",
+                        rule.id,
+                        rule.name,
+                        notify_err or "未知错误",
+                    )
                 triggered += 1
                 items.append(
                     {

@@ -389,7 +389,7 @@ export const configuration = {
     savedAt: 'Auto-saved · {{time}}',
     autosaveHint: 'Changes persist instantly and arm as the next session\'s monitoring universe before open',
     columns: { symbol: 'Symbol', name: 'Name', market: 'Market', status: 'Status', addedAt: 'Added' },
-    status: { active: 'Monitoring', capturedToday: 'Captured today', disabled: 'Awaiting re-arm (next session)', missing: 'Rule missing' },
+    status: { active: 'Monitoring', capturedToday: 'Triggered today', capturedPushFailed: 'Triggered today · push failed', disabled: 'Triggered · paused (auto-resumes)', disabledPushFailed: 'Triggered · push failed (auto-resumes)', missing: 'Rule missing' },
     actions: { remove: 'Remove from universe' },
   },
   dashboard: {

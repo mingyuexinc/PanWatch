@@ -110,11 +110,22 @@ def list_universe(db: Session) -> dict[str, Any]:
         )
         if is_monitor_rule(rule)
     }
+    # 最近一次命中的推送结果:推送失败时前端用红色状态提示,而不是静默丢失。
+    latest_hit_by_rule: dict[int, PriceAlertHit] = {}
+    if rules:
+        for hit in (
+            db.query(PriceAlertHit)
+            .filter(PriceAlertHit.rule_id.in_([r.id for r in rules.values()]))
+            .order_by(PriceAlertHit.id.desc())
+            .all()
+        ):
+            latest_hit_by_rule.setdefault(hit.rule_id, hit)
     rows: list[dict[str, Any]] = []
     saved_at: datetime | None = None
     for item in items:
         stock = item.stock
         rule = rules.get(item.stock_id)
+        last_hit = latest_hit_by_rule.get(rule.id) if rule else None
         rows.append(
             {
                 "id": item.id,
@@ -137,6 +148,12 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "rule_last_trigger_price": rule.last_trigger_price
                 if rule
                 else None,
+                "rule_last_hit_notify_success": (
+                    bool(last_hit.notify_success) if last_hit else None
+                ),
+                "rule_last_hit_notify_error": (
+                    last_hit.notify_error or "" if last_hit else ""
+                ),
             }
         )
         item_updated = _naive_utc(item.updated_at) or _naive_utc(item.created_at)

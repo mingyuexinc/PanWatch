@@ -386,7 +386,7 @@ export const configuration = {
     savedAt: '已自动保存 · {{time}}',
     autosaveHint: '变更即时落库,次日开盘前自动生效为盘中监控集合',
     columns: { symbol: '代码', name: '名称', market: '市场', status: '监控状态', addedAt: '加入日期' },
-    status: { active: '监控中', capturedToday: '今日已捕获', disabled: '待重臂(次日恢复)', missing: '规则未生成' },
+    status: { active: '监控中', capturedToday: '今日已触发', capturedPushFailed: '今日已触发·推送失败', disabled: '已触发·暂停中(自动恢复)', disabledPushFailed: '已触发·推送失败(自动恢复)', missing: '规则未生成' },
     actions: { remove: '移出监控池' },
   },
   dashboard: {

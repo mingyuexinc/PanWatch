@@ -13,6 +13,9 @@ export interface MonitorUniverseItem {
   rule_enabled: boolean
   rule_last_trigger_at: string | null
   rule_last_trigger_price: number | null
+  /** 最近一次命中的推送结果(null=尚未命中过) */
+  rule_last_hit_notify_success: boolean | null
+  rule_last_hit_notify_error: string
 }
 
 export interface MonitorUniverseList {
