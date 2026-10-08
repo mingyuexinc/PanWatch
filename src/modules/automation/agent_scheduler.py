@@ -20,7 +20,9 @@ class AgentScheduler:
     """Agent 调度器"""
 
     def __init__(self, timezone: str = "UTC"):
-        self.scheduler = AsyncIOScheduler()
+        # 显式传入时区:不传时 APScheduler 回退到系统本地时区,
+        # 直接 add_job 的系统任务(如监控池 09:10 重臂)会随宿主机时区漂移。
+        self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.agents: dict[str, BaseAgent] = {}
         self.execution_modes: dict[str, str] = {}
         self.timezone = timezone

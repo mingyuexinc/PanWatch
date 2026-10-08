@@ -1167,6 +1167,7 @@ def register_mcp_log_cleanup(sched: AgentScheduler) -> None:
         minute=0,
         id="mcp_log_retention",
         replace_existing=True,
+        misfire_grace_time=3600,
     )
     logger.info("MCP 日志保留期清理任务已注册")
 
@@ -1191,6 +1192,8 @@ def register_monitor_universe_rearm(sched: AgentScheduler) -> None:
     """每日 09:10(开盘前)重臂监控规则,使监控池成为当日/次日盘中监控集合。
 
     同步是幂等的且只清除"非当日"的触发痕迹,进程重启后补跑同样安全。
+    misfire_grace_time 放宽到 1 小时:每天只有这一次机会,事件循环在整点
+    卡顿超过默认 1 秒就会整天跳过(默认值对每日一次的任务过于苛刻)。
     """
     sched.scheduler.add_job(
         _sync_monitor_rules_job,
@@ -1199,8 +1202,20 @@ def register_monitor_universe_rearm(sched: AgentScheduler) -> None:
         minute=10,
         id="monitor_universe_rearm",
         replace_existing=True,
+        misfire_grace_time=3600,
     )
     logger.info("监控池每日重臂任务已注册(09:10)")
+
+
+def register_system_jobs(sched: AgentScheduler) -> None:
+    """注册与 Agent 配置无关的系统级定时任务。
+
+    这些任务挂在 Agent 调度器实例上,而 build_scheduler() 只注册 Agent;
+    调度器重建(如配置包导入触发 reload_scheduler)后必须补注册,
+    否则任务会随旧实例一起静默丢失,直到下次进程重启。
+    """
+    register_mcp_log_cleanup(sched)
+    register_monitor_universe_rearm(sched)
 
 
 def reload_scheduler() -> bool:
@@ -1215,6 +1230,9 @@ def reload_scheduler() -> bool:
                 pass
         scheduler = build_scheduler()
         scheduler.start()
+        # 系统级任务(日志清理/监控池重臂)不在 build_scheduler 内注册,
+        # 重建后必须补注册,否则会随旧实例静默丢失。
+        register_system_jobs(scheduler)
         logger.info("Agent 调度器已重载")
         return True
     except Exception as e:
@@ -1599,16 +1617,13 @@ async def lifespan(app):
         logger.info("上下文维护调度器已启动")
     except Exception as e:
         logger.error(f"上下文维护调度器启动失败: {e}")
-    # MCP 调用日志保留期清理:每日 04:00 清理超期审计记录
+    # MCP 调用日志保留期清理 + 监控池每日 09:10 重臂(系统级任务,
+    # reload_scheduler 重建调度器后同样经由 register_system_jobs 补注册)
     try:
-        register_mcp_log_cleanup(scheduler)
+        register_system_jobs(scheduler)
     except Exception as e:
-        logger.error(f"MCP 日志清理任务注册失败: {e}")
-    # 监控池:每日 09:10 重臂 MA 监控规则;启动时补跑一次幂等同步
-    try:
-        register_monitor_universe_rearm(scheduler)
-    except Exception as e:
-        logger.error(f"监控池重臂任务注册失败: {e}")
+        logger.error(f"系统级定时任务注册失败: {e}")
+    # 监控池:启动时补跑一次幂等同步
     try:
         asyncio.get_running_loop().run_in_executor(None, _sync_monitor_rules_job)
     except Exception as e:
