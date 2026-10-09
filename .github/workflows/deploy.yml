@@ -120,7 +120,9 @@ jobs:
     if: vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 15
+    # 首层拉取曾因服务器→GHCR 慢速耗时 14 分钟,15 分钟会掐断已成功的部署
+    # (2026-10-09 run 37957522430 在 "Deployment succeeded" 后 0.1s 被取消)。
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
