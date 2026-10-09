@@ -1107,6 +1107,30 @@ class PaperTradingTrade(Base):
     meta = Column(JSON, default={})
 
 
+class TradeJournalEntry(Base):
+    """自定义交易记录: 人工录入并复盘的每笔交易(短线打板日记)。
+
+    记录列固定为 开仓日期/股票名称/板块身位/开盘涨幅/封板结果/卖出时机/
+    收益率/复盘备注,排序由 sort_order 决定,支持页内拖拽调整。
+    """
+
+    __tablename__ = "trade_journal_entries"
+    __table_args__ = (Index("ix_trade_journal_sort", "sort_order"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String, nullable=False)  # 开仓日期 "YYYY-MM-DD"
+    stock_name = Column(String, nullable=False, default="")  # 股票名称
+    sector = Column(String, default="")  # 板块/身位
+    open_change_pct = Column(Float, nullable=True)  # 开盘涨幅(%数值,未填为 NULL)
+    seal_result = Column(String, default="")  # 封板结果
+    sell_timing = Column(String, default="")  # 卖出时机
+    return_pct = Column(Float, nullable=True)  # 收益率(%数值,未填为 NULL)
+    review_note = Column(Text, default="")  # 复盘备注
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class ChatConversation(Base):
     """AI 对话会话"""
 

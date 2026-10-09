@@ -17,7 +17,7 @@
 | 分叉基点 | `00b345b`（2026-10-01，上游 PR #169，当前 `upstream/main` HEAD） |
 | 改造层分支 | `deploy/main`（`main` 纯跟踪上游，不承载改造提交） |
 | 改造周期 | 2026-10-02 起 |
-| 改造规模 | 11 个提交，40 个文件，+2477 / −21 行（相对分叉基点） |
+| 改造规模 | 15 个提交，51 个文件，+4295 / −22 行（相对分叉基点） |
 
 ## 2. 改造目标
 
@@ -68,6 +68,19 @@ git checkout deploy/main && git rebase main   # 或 merge，视冲突规模
 - **规则同步**：信号变更即时重写该股票模板规则的 ma 条件并**强制重臂**（清除触发痕迹——旧信号当日是否触发过与新信号无关）；每日 09:10 与启动同步同样对齐条件漂移。规则名随信号更新为 `MA{N}上穿|下穿监控·名称(代码)`，推送标题直接可读；历史遗留的 `MA5监控·` 规则被自动采纳并重命名，条件不变则不重臂。
 - **数据迁移**：`monitor_universe_items` 新增 `monitor_signal` 列（存量行回填 `above_5`，行为不变）。
 - **接口**：`PATCH /api/monitor-universe/{id}`（body: `monitor_signal`，非法信号 400、条目不存在 404）；list 响应附信号目录 `signals`。
+
+### 4.4 自定义交易记录(复盘日记)
+
+手动录入每笔交易的复盘记录,支持拖拽排序、多选删除、分页与一键统计(2026-10-09)。
+
+- **入口**:首页右上角用户头像下拉菜单"交易记录"(`/trade-journal`),不占主导航位。
+- **记录列**:开仓日期(日期组件)、股票名称、板块/身位、开盘涨幅、封板结果、卖出时机、收益率、复盘备注(编辑框输入;开盘涨幅与收益率均支持 `5.2`/`5.2%`/`-3.5` 宽松解析,留空表示未记录)。
+- **编辑与调整**:每条支持编辑、单删;复选框多选 + 表头全选批量删除;行内拖拽调整顺序(拖拽提交当前页新顺序,服务端全表重编号),刷新后顺序持久。
+- **分页**:每页 20 条,页码按钮可点击跳转(页码窗口化,超出 7 页显示省略号);页码越界自动收敛到最后一页。
+- **一键统计**:范围为全部记录;盈利概率 = 收益率>0 条数/有效条数,总收益率 = ∏(1+收益率)−1(乘法复合);收益率未填的记录不参与计算。
+- **数据表**:`trade_journal_entries`(新记录插到最前;`sort_order` 决定顺序)。表由 `Base.metadata.create_all` 自动创建;2026-10-09 列语义调整"开盘价→开盘涨幅",`database.py` 内置 `open_price → open_change_pct` 幂等重命名迁移,存量数据保留。
+- **接口**:REST `/api/trade-journal`(list 分页 / create / update / delete / batch-delete / reorder/batch / stats),错误码 `trade_journal_entry_not_found`、`trade_journal_payload_invalid`。
+- **模块**:`src/modules/trading_journal/`(service + api),模型在共享持久化层;前端页面 `frontend/src/pages/TradeJournal.tsx`,API 封装 `@panwatch/api` 的 `tradeJournal.ts`;中英文案已同步(i18n `configuration.tradeJournal` 与 `navigation.items.tradeJournal`)。
 
 ## 5. 线上访问体验
 

@@ -1,6 +1,6 @@
 import { Suspense, useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
-import { TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, Github, BellRing, Sparkles, Activity, ClipboardCheck, MessageCircle, Radar } from 'lucide-react'
+import { TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, Github, BellRing, Sparkles, Activity, ClipboardCheck, MessageCircle, Radar, BookOpenText } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { appApi } from '@panwatch/api/app'
 import { fetchAPI, isAuthenticated } from '@panwatch/api/client'
@@ -29,6 +29,7 @@ const {
   AnalysisDetailPage,
   PriceAlertsPage,
   MonitorUniversePage,
+  TradeJournalPage,
   PaperTradingPage,
   EvaluationsPage,
   AssistantPage,
@@ -42,6 +43,7 @@ const NAV_ITEMS: Array<{ to: string; icon: typeof LayoutDashboard; labelKey: Nav
   { to: '/paper-trading', icon: Activity, labelKey: 'paperTrading' },
   { to: '/alerts', icon: BellRing, labelKey: 'alerts' },
   { to: '/monitor-universe', icon: Radar, labelKey: 'monitorUniverse' },
+  { to: '/trade-journal', icon: BookOpenText, labelKey: 'tradeJournal' },
   { to: '/agents', icon: Bot, labelKey: 'agents' },
   { to: '/evaluations', icon: ClipboardCheck, labelKey: 'evaluations' },
   { to: '/history', icon: Clock, labelKey: 'history' },
@@ -308,6 +310,7 @@ function App() {
               <Route path="/paper-trading" element={<PaperTradingPage />} />
               <Route path="/alerts" element={<PriceAlertsPage />} />
               <Route path="/monitor-universe" element={<MonitorUniversePage />} />
+              <Route path="/trade-journal" element={<TradeJournalPage />} />
               <Route path="/assistant" element={<AssistantPage />} />
               <Route path="/assistant/:conversationId" element={<AssistantPage />} />
               <Route path="/datasources" element={<DataSourcesPage />} />

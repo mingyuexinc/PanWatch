@@ -7,6 +7,7 @@ export const navigation = {
     assistant: '助手',
     alerts: '提醒',
     monitorUniverse: '监控池',
+    tradeJournal: '交易记录',
     agents: 'Agent',
     evaluations: '验证中心',
     history: '历史',

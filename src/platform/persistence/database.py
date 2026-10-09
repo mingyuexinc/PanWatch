@@ -84,6 +84,7 @@ def init_db():
 def _init_db_once() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate(engine)
+    _rename_trade_journal_open_price(engine)
     _migrate_old_providers(engine)
     _migrate_settings_to_models(engine)
     _migrate_positions_to_accounts(engine)
@@ -325,6 +326,25 @@ CREATE TABLE IF NOT EXISTS suggestion_feedback (
                 )
             )
             conn.commit()
+
+
+def _rename_trade_journal_open_price(engine):
+    """自定义交易记录:列语义由"开盘价"调整为"开盘涨幅",重命名列并保留数据。"""
+    with engine.connect() as conn:
+        if not _has_table(conn, "trade_journal_entries"):
+            return
+        if _has_column(conn, "trade_journal_entries", "open_change_pct"):
+            return
+        if not _has_column(conn, "trade_journal_entries", "open_price"):
+            return
+        conn.execute(
+            text(
+                "ALTER TABLE trade_journal_entries "
+                "RENAME COLUMN open_price TO open_change_pct"
+            )
+        )
+        conn.commit()
+        logger.info("已将 trade_journal_entries.open_price 重命名为 open_change_pct")
 
 
 def _migrate_old_providers(engine):

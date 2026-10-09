@@ -46,6 +46,7 @@ from src.modules.research.api import (
     recommendations,
 )
 from src.modules.strategy.api import factors
+from src.modules.trading_journal.api import trade_journal
 from src.web.response import ResponseWrapperMiddleware
 
 app = FastAPI(
@@ -159,6 +160,13 @@ app.include_router(
     monitor_universe.router,
     prefix="/api/monitor-universe",
     tags=["monitor-universe"],
+    dependencies=protected,
+)
+# 自定义交易记录(复盘日记): 增删改/批量删/拖拽排序/分页/一键统计
+app.include_router(
+    trade_journal.router,
+    prefix="/api/trade-journal",
+    tags=["trade-journal"],
     dependencies=protected,
 )
 app.include_router(

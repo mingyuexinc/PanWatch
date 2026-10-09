@@ -97,6 +97,8 @@ const API_ERROR_TEXT_EN: Record<string, string> = {
   quote_not_found: 'No quote is available for this stock.',
   stock_agent_not_bound: 'This stock is not bound to the selected Agent.',
   stock_agent_unbound_not_allowed: 'Allow an unbound Agent run before running it for a stock that is not in the watchlist.',
+  trade_journal_entry_not_found: 'The trade-journal entry could not be found.',
+  trade_journal_payload_invalid: 'The trade-journal entry is invalid. Check the values and try again.',
   stock_already_exists: 'This stock is already in the watchlist.',
   stock_has_position: 'Remove the positions before removing this stock.',
   stock_not_found: 'The stock could not be found.',

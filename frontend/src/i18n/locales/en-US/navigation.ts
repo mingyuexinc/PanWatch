@@ -10,6 +10,7 @@ export const navigation = {
     assistant: 'Assistant',
     alerts: 'Alerts',
     monitorUniverse: 'Monitors',
+    tradeJournal: 'Trade journal',
     agents: 'Agents',
     evaluations: 'Evaluation',
     history: 'History',
