@@ -1,18 +1,23 @@
 """监控池(Monitor Universe)共享领域服务。
 
 监控池是人工在看板维护的"盘中监控股票集合":
-- 看板的每次增删即时落库(即自动保存,无独立保存按钮);
-- 每次变更后同步生成/回收对应的 MA 监控提醒规则;
+- 看板的每次增删/监控条件修改即时落库(即自动保存,无独立保存按钮);
+- 每次变更后同步生成/回收/对齐对应的 MA 监控提醒规则;
 - 每日开盘前(09:10)与进程启动时重臂(re-arm)监控规则,
   使自动保存的集合成为次日盘中的监控股票集合。
 
-MA 监控规则是系统托管的模板规则: 以 MONITOR_RULE_PREFIX 命名并携带
-ma(周期=MONITOR_MA_PERIOD) 条件;repeat_mode=once 保证当日仅首次捕获,
+监控信号共 6 种: 现价上穿(下穿)当日 5/10/20 日均线。
+- 上穿: 现价 >= 当日滚动 N 日线(沿用既有语义);
+- 下穿: 现价 < 当日滚动 N 日线(严格低于,不含等于)。
+
+MA 监控规则是系统托管的模板规则: 名称形如 "MA5上穿监控·名称(代码)"
+并携带 ma(周期) 条件;repeat_mode=once 保证当日仅首次捕获,
 重臂只清除"非当日"的触发痕迹,重启/盘中重臂都不会造成当日重复捕获。
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,8 +31,38 @@ from src.platform.persistence.models import (
     Stock,
 )
 
-MONITOR_RULE_PREFIX = "MA5监控·"
-MONITOR_MA_PERIOD = 5
+MONITOR_MA_PERIODS = (5, 10, 20)
+DEFAULT_MONITOR_SIGNAL = "above_5"
+
+# 信号 → (方向, 均线周期, 比较op)。上穿含等于(现价>=MA),下穿严格低于(现价<MA)。
+MONITOR_SIGNALS: dict[str, tuple[str, int, str]] = {
+    f"{direction}_{period}": (
+        direction,
+        period,
+        ">=" if direction == "above" else "<",
+    )
+    for direction in ("above", "below")
+    for period in MONITOR_MA_PERIODS
+}
+
+# 规则名: "MA5上穿监控·贵州茅台(600519)"。历史遗留命名 "MA5监控·" 无方向段,同样识别。
+MONITOR_RULE_NAME_RE = re.compile(r"^MA(\d+)(上穿|下穿)?监控·")
+_SIGNAL_DIRECTION_LABEL = {"above": "上穿", "below": "下穿"}
+
+
+def normalize_monitor_signal(value: Any) -> str:
+    """把任意输入归一化为合法信号 key,非法值回退默认(上穿5日线)。"""
+    key = str(value or "").strip()
+    return key if key in MONITOR_SIGNALS else DEFAULT_MONITOR_SIGNAL
+
+
+def require_monitor_signal(value: Any) -> str:
+    """校验信号 key,非法时抛 ValueError(给 API 层返回 400)。"""
+    key = str(value or "").strip()
+    if key not in MONITOR_SIGNALS:
+        allowed = "/".join(MONITOR_SIGNALS)
+        raise ValueError(f"不支持的监控信号: {key!r}(可选: {allowed})")
+    return key
 
 
 def _utc_now() -> datetime:
@@ -42,28 +77,48 @@ def _naive_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _rule_ma_condition(rule: PriceAlertRule) -> dict | None:
+    for item in (rule.condition_group or {}).get("items") or []:
+        if isinstance(item, dict) and item.get("type") == "ma":
+            return item
+    return None
+
+
+def _rule_signal(rule: PriceAlertRule) -> str | None:
+    """从规则的 ma 条件反解信号 key(条件是信号的唯一事实来源)。"""
+    cond = _rule_ma_condition(rule)
+    if not cond:
+        return None
+    try:
+        period = int(cond.get("value") or 0)
+    except (TypeError, ValueError):
+        return None
+    op = str(cond.get("op") or "")
+    for key, (_, p, o) in MONITOR_SIGNALS.items():
+        if p == period and o == op:
+            return key
+    return None
+
+
 def is_monitor_rule(rule: PriceAlertRule) -> bool:
-    """识别系统托管的 MA 监控模板规则(名称前缀+ma条件双重要求)。"""
-    if not (rule.name or "").startswith(MONITOR_RULE_PREFIX):
+    """识别系统托管的 MA 监控模板规则(命名模式+ma条件双重要求)。"""
+    if not MONITOR_RULE_NAME_RE.match(rule.name or ""):
         return False
-    items = (rule.condition_group or {}).get("items") or []
-    return any(
-        isinstance(item, dict)
-        and item.get("type") == "ma"
-        and int(item.get("value") or 0) == MONITOR_MA_PERIOD
-        for item in items
-    )
+    return _rule_signal(rule) is not None
 
 
-def _monitor_rule_name(stock: Stock) -> str:
-    return f"{MONITOR_RULE_PREFIX}{stock.name or stock.symbol}({stock.symbol})"
+def _monitor_rule_name(stock: Stock, signal: str) -> str:
+    direction, period, _ = MONITOR_SIGNALS[signal]
+    label = _SIGNAL_DIRECTION_LABEL[direction]
+    return f"MA{period}{label}监控·{stock.name or stock.symbol}({stock.symbol})"
 
 
-def _template_condition_group() -> dict[str, Any]:
+def _template_condition_group(signal: str) -> dict[str, Any]:
+    _, period, op = MONITOR_SIGNALS[signal]
     return {
         "op": "and",
         "items": [
-            {"type": "ma", "op": ">=", "value": MONITOR_MA_PERIOD},
+            {"type": "ma", "op": op, "value": period},
         ],
     }
 
@@ -106,7 +161,7 @@ def list_universe(db: Session) -> dict[str, Any]:
     rules = {
         rule.stock_id: rule
         for rule in db.query(PriceAlertRule).filter(
-            PriceAlertRule.name.startswith(MONITOR_RULE_PREFIX)
+            PriceAlertRule.name.like("MA_%监控·%")
         )
         if is_monitor_rule(rule)
     }
@@ -134,6 +189,7 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "name": stock.name if stock else "",
                 "market": stock.market if stock else "",
                 "note": item.note or "",
+                "monitor_signal": normalize_monitor_signal(item.monitor_signal),
                 "added_at": _naive_utc(item.created_at).isoformat()
                 if item.created_at
                 else None,
@@ -163,7 +219,7 @@ def list_universe(db: Session) -> dict[str, Any]:
         "items": rows,
         "total": len(rows),
         "saved_at": saved_at.isoformat() if saved_at else None,
-        "ma_period": MONITOR_MA_PERIOD,
+        "signals": list(MONITOR_SIGNALS),
     }
 
 
@@ -179,7 +235,8 @@ def add_to_universe(
     )
     created = item is None
     if created:
-        item = MonitorUniverseItem(stock_id=stock.id)
+        # 新条目默认上穿5日均线;monitor_signal 列的模型默认值兜底,显式赋值避免依赖列默认。
+        item = MonitorUniverseItem(stock_id=stock.id, monitor_signal=DEFAULT_MONITOR_SIGNAL)
         db.add(item)
         db.commit()
         db.refresh(item)
@@ -202,18 +259,43 @@ def remove_from_universe(db: Session, item_ids: list[int]) -> int:
     return int(removed)
 
 
+def update_item_signal(
+    db: Session, item_id: int, signal: str
+) -> MonitorUniverseItem | None:
+    """修改监控池条目的监控信号并立即同步规则(即时自动保存)。
+
+    信号变化会重写规则的 ma 条件并清除触发痕迹(强制重臂):
+    旧信号当日是否触发过与新信号无关,新条件应立即恢复盘中监控。
+    返回条目;条目不存在返回 None;信号非法抛 ValueError。
+    """
+    signal = require_monitor_signal(signal)
+    item = (
+        db.query(MonitorUniverseItem)
+        .filter(MonitorUniverseItem.id == int(item_id))
+        .first()
+    )
+    if item is None:
+        return None
+    if normalize_monitor_signal(item.monitor_signal) != signal:
+        item.monitor_signal = signal
+        db.commit()
+    sync_monitor_rules(db)
+    return item
+
+
 def sync_monitor_rules(db: Session) -> dict[str, int]:
     """监控池 → MA 监控规则的双向同步(幂等,可安全重复调用)。
 
-    - 池内股票缺规则 → 按模板创建;
-    - 池内股票的规则因"仅首次"在历史上触发过而停用,且最近一次触发
-      不在今日 → 重臂(清除触发痕迹并启用),保证次日盘中恢复监控;
-      最近一次触发就在今日的规则保持原样,避免当日重复捕获;
+    - 池内股票缺规则 → 按该条目信号创建;
+    - 池内规则的 ma 条件与条目信号不一致(含历史遗留模板) → 重写条件与
+      名称并强制重臂(清除触发痕迹),旧信号当日的触发不阻塞新信号;
+    - 池内规则因"仅首次"在历史上触发过而停用,且最近一次触发不在今日
+      → 重臂,保证次日盘中恢复监控;最近一次触发就在今日的规则保持原样;
     - 不在池内的模板规则 → 连同命中历史一起回收。
     """
-    universe_stock_ids = {
-        row[0]
-        for row in db.query(MonitorUniverseItem.stock_id).distinct()
+    signal_by_stock = {
+        item.stock_id: normalize_monitor_signal(item.monitor_signal)
+        for item in db.query(MonitorUniverseItem).all()
     }
     today = _utc_now().date()
 
@@ -221,13 +303,13 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
     monitor_rules = [
         rule
         for rule in db.query(PriceAlertRule).filter(
-            PriceAlertRule.name.startswith(MONITOR_RULE_PREFIX)
+            PriceAlertRule.name.like("MA_%监控·%")
         )
         if is_monitor_rule(rule)
     ]
     rule_by_stock = {rule.stock_id: rule for rule in monitor_rules}
 
-    for stock_id in universe_stock_ids:
+    for stock_id, signal in signal_by_stock.items():
         rule = rule_by_stock.get(stock_id)
         if rule is None:
             stock = db.query(Stock).filter(Stock.id == stock_id).first()
@@ -236,9 +318,9 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
             db.add(
                 PriceAlertRule(
                     stock_id=stock_id,
-                    name=_monitor_rule_name(stock),
+                    name=_monitor_rule_name(stock, signal),
                     enabled=True,
-                    condition_group=_template_condition_group(),
+                    condition_group=_template_condition_group(signal),
                     market_hours_mode="trading_only",
                     cooldown_minutes=30,
                     max_triggers_per_day=1,
@@ -248,6 +330,20 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
             )
             created += 1
             continue
+        desired_name = _monitor_rule_name(rule.stock, signal)
+        condition_changed = _rule_signal(rule) != signal
+        if condition_changed:
+            rule.name = desired_name
+            rule.condition_group = _template_condition_group(signal)
+            rule.enabled = True
+            rule.last_trigger_at = None
+            rule.last_trigger_price = None
+            rule.trigger_count_today = 0
+            rule.trigger_date = ""
+            rearmed += 1
+            continue
+        if rule.name != desired_name:
+            rule.name = desired_name
         last_trigger = _naive_utc(rule.last_trigger_at)
         triggered_today = last_trigger is not None and last_trigger.date() == today
         if triggered_today:
@@ -259,7 +355,7 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
             rearmed += 1
 
     for rule in monitor_rules:
-        if rule.stock_id in universe_stock_ids:
+        if rule.stock_id in signal_by_stock:
             continue
         db.query(PriceAlertHit).filter(
             PriceAlertHit.rule_id == rule.id

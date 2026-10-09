@@ -276,6 +276,12 @@ def _migrate(engine):
             "meta",
             "ALTER TABLE stock_suggestions ADD COLUMN meta TEXT DEFAULT '{}'",
         ),
+        # 监控池: 每只股票的监控信号(上穿/下穿 × 5/10/20日均线),存量行回填默认"上穿5日线"
+        (
+            "monitor_universe_items",
+            "monitor_signal",
+            "ALTER TABLE monitor_universe_items ADD COLUMN monitor_signal TEXT NOT NULL DEFAULT 'above_5'",
+        ),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:

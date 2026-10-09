@@ -1,5 +1,8 @@
 import { fetchAPI } from './client'
 
+/** 监控信号 key: {above|below}_{5|10|20},上穿=现价>=均线,下穿=现价<均线 */
+export type MonitorSignal = string
+
 export interface MonitorUniverseItem {
   id: number
   stock_id: number
@@ -7,6 +10,7 @@ export interface MonitorUniverseItem {
   name: string
   market: string
   note: string
+  monitor_signal: MonitorSignal
   added_at: string | null
   updated_at: string | null
   rule_id: number | null
@@ -22,17 +26,19 @@ export interface MonitorUniverseList {
   items: MonitorUniverseItem[]
   total: number
   saved_at: string | null
-  ma_period: number
+  /** 可选监控信号目录(按 上穿5/10/20 → 下穿5/10/20 排序) */
+  signals: MonitorSignal[]
 }
 
 export interface MonitorUniverseMutationResult {
   id?: number
   created?: boolean
   removed?: number
+  updated?: boolean
   items: MonitorUniverseItem[]
   total: number
   saved_at: string | null
-  ma_period: number
+  signals: MonitorSignal[]
 }
 
 export interface StockSearchResult {
@@ -56,6 +62,11 @@ export const monitorUniverseApi = {
     fetchAPI<MonitorUniverseMutationResult>('/monitor-universe/batch', {
       method: 'DELETE',
       body: JSON.stringify({ ids }),
+    }),
+  updateSignal: (id: number, monitor_signal: MonitorSignal) =>
+    fetchAPI<MonitorUniverseMutationResult>(`/monitor-universe/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ monitor_signal }),
     }),
   search: (q: string) =>
     fetchAPI<StockSearchResult[]>(

@@ -1018,6 +1018,10 @@ class MonitorUniverseItem(Base):
         Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
     )
     note = Column(String, default="")
+    # 监控信号: above_5/below_5/above_10/below_10/above_20/below_20
+    monitor_signal = Column(
+        String, nullable=False, default="above_5", server_default="above_5"
+    )
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

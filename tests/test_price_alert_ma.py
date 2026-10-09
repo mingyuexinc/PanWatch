@@ -73,6 +73,19 @@ def test_ma_above_threshold_matched():
     assert detail["target"] == pytest.approx((14.06 + 3.52) / 5)
 
 
+def test_ma_below_op_is_strict():
+    """监控池"下穿"信号: '<' 为严格低于,现价恰好等于均线(3.515)不命中。"""
+    eng = _engine_with_closes(CLOSES_002437)
+    ok_equal, detail_equal = _eval_ma(eng, 3.515, op="<")
+    assert ok_equal is False
+    assert detail_equal["matched"] is False
+
+    ok_below, detail_below = _eval_ma(eng, 3.51, op="<")
+    assert ok_below is True
+    assert detail_below["matched"] is True
+    assert detail_below["target"] == pytest.approx((14.06 + 3.51) / 5)
+
+
 def test_ma_equivalent_to_prev_closes_average():
     """滚动定义等价性: P >= MA5(P) 当且仅当 P >= 前4日收盘均值。"""
     eng = _engine_with_closes(CLOSES_002437)

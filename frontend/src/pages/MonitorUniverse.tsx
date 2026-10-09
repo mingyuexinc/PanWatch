@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Trash2, Radar } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { monitorUniverseApi, type MonitorUniverseItem, type StockSearchResult } from '@panwatch/api'
+import { monitorUniverseApi, type MonitorSignal, type MonitorUniverseItem, type StockSearchResult } from '@panwatch/api'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Input } from '@panwatch/base-ui/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from '@panwatch/base-ui/components/ui/select'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 
 const SEARCH_DEBOUNCE_MS = 400
+
+// 后端信号目录未加载完成前的兜底(顺序:上穿5/10/20 → 下穿5/10/20)。
+const FALLBACK_SIGNALS: MonitorSignal[] = [
+  'above_5', 'above_10', 'above_20', 'below_5', 'below_10', 'below_20',
+]
 
 // 后端时间为 naive UTC(isoformat 不带时区后缀)。直接 new Date() 会被浏览器
 // 按本地时区解释,A股盘中(UTC 00:00-15:59)触发的时间会被判成前一天。
@@ -59,7 +70,7 @@ export default function MonitorUniversePage() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState<MonitorUniverseItem[]>([])
   const [savedAt, setSavedAt] = useState<string | null>(null)
-  const [maPeriod, setMaPeriod] = useState(5)
+  const [signals, setSignals] = useState<MonitorSignal[]>(FALLBACK_SIGNALS)
   const [mutating, setMutating] = useState(false)
   const [selected, setSelected] = useState<number[]>([])
 
@@ -78,11 +89,11 @@ export default function MonitorUniversePage() {
   const applyList = (payload: {
     items: MonitorUniverseItem[]
     saved_at: string | null
-    ma_period: number
+    signals?: MonitorSignal[]
   }) => {
     setItems(payload.items || [])
     setSavedAt(payload.saved_at)
-    if (payload.ma_period) setMaPeriod(payload.ma_period)
+    if (payload.signals?.length) setSignals(payload.signals)
     setSelected(prev => prev.filter(id => (payload.items || []).some(i => i.id === id)))
   }
 
@@ -189,6 +200,26 @@ export default function MonitorUniversePage() {
     }
   }
 
+  const pickSignal = async (item: MonitorUniverseItem, signal: MonitorSignal) => {
+    if (mutating || signal === item.monitor_signal) return
+    setMutating(true)
+    try {
+      applyList(await monitorUniverseApi.updateSignal(item.id, signal))
+      toast(
+        monitorT('signalUpdated', {
+          name: item.name,
+          symbol: item.symbol,
+          signal: monitorT(`signals.${signal}`),
+        }),
+        'success',
+      )
+    } catch (e) {
+      toast(e instanceof Error ? e.message : monitorT('signalUpdateFailed'), 'error')
+    } finally {
+      setMutating(false)
+    }
+  }
+
   const toggleSelected = (id: number) => {
     setSelected(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]))
   }
@@ -274,7 +305,7 @@ export default function MonitorUniversePage() {
         <div className="flex items-center justify-between border-b border-border/40 px-4 py-2.5">
           <div className="text-[12px] text-muted-foreground">
             {monitorT('count', { count: items.length })}
-            <span className="ml-2 text-muted-foreground/70">{monitorT('maNote', { period: maPeriod })}</span>
+            <span className="ml-2 text-muted-foreground/70">{monitorT('maNote')}</span>
           </div>
           <Button
             variant="destructive"
@@ -308,6 +339,7 @@ export default function MonitorUniversePage() {
                 <th className="px-2 py-2 font-medium">{monitorT('columns.symbol')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.name')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.market')}</th>
+                <th className="px-2 py-2 font-medium">{monitorT('columns.condition')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.status')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.addedAt')}</th>
                 <th className="w-14 px-2 py-2" />
@@ -328,6 +360,27 @@ export default function MonitorUniversePage() {
                     <td className="px-2 py-2 font-mono">{item.symbol}</td>
                     <td className="px-2 py-2">{item.name}</td>
                     <td className="px-2 py-2 text-muted-foreground">{item.market}</td>
+                    <td className="px-2 py-2">
+                      <Select
+                        value={item.monitor_signal}
+                        onValueChange={signal => pickSignal(item, signal)}
+                        disabled={mutating}
+                      >
+                        <SelectTrigger
+                          className="h-7 w-[8.5rem] rounded-lg px-2 text-[12px]"
+                          title={monitorT('conditionHint')}
+                        >
+                          <span>{monitorT(`signals.${item.monitor_signal}`)}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {signals.map(signal => (
+                            <SelectItem key={signal} value={signal} className="text-[12px]">
+                              {monitorT(`signals.${signal}`)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </td>
                     <td className={`px-2 py-2 ${status.tone}`}>{monitorT(status.key)}</td>
                     <td className="px-2 py-2 text-muted-foreground">{formatDate(item.added_at)}</td>
                     <td className="px-2 py-2 text-right">

@@ -70,6 +70,8 @@ const API_ERROR_TEXT_EN: Record<string, string> = {
   hot_boards_unavailable: 'Hot-sector data is temporarily unavailable.',
   hot_stocks_unavailable: 'Hot-stock data is temporarily unavailable.',
   invalid_credentials: 'The username or password is incorrect.',
+  invalid_monitor_signal: 'The monitor signal is not supported.',
+  universe_item_not_found: 'The monitoring-universe item could not be found.',
   market_unsupported: 'This market is not supported.',
   mcp_bearer_required: 'A Bearer personal access token is required.',
   mcp_pat_required: 'This MCP endpoint requires a pwmcp_ personal access token.',
