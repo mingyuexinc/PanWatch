@@ -32,6 +32,7 @@ const {
   TradeJournalPage,
   PaperTradingPage,
   EvaluationsPage,
+  AgentEvaluationsPage,
   AssistantPage,
 } = routePages
 
@@ -306,6 +307,7 @@ function App() {
               <Route path="/portfolio" element={<StocksPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
+              <Route path="/evaluations/agent-predictions" element={<AgentEvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/paper-trading" element={<PaperTradingPage />} />
               <Route path="/alerts" element={<PriceAlertsPage />} />

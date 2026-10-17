@@ -1000,6 +1000,26 @@ class PriceAlertHit(Base):
     stock = relationship("Stock")
 
 
+class IntradayQualitySample(Base):
+    """分时线质量评估样本（人工标注 + Wyckoff strength_score）。"""
+
+    __tablename__ = "intraday_quality_samples"
+    __table_args__ = (
+        Index("ix_intraday_quality_symbol_date", "symbol", "market", "test_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String, nullable=False)
+    market = Column(String, nullable=False, default="CN", server_default="CN")
+    name = Column(String, nullable=False, default="")
+    test_date = Column(String, nullable=False)
+    sample_type = Column(String, nullable=False, default="positive", server_default="positive")
+    strength_score = Column(Float, nullable=True)
+    note = Column(String, default="")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class MonitorUniverseItem(Base):
     """监控池条目: 人工在看板维护的盘中监控股票集合。
 

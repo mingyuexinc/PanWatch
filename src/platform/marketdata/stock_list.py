@@ -350,6 +350,8 @@ def _realtime_search(query: str, market: str = "", limit: int = 20) -> list[dict
         if mkt == "HK":
             # 保证为 5 位代码
             c = c.zfill(5)
+        elif mkt == "CN" and c.isdigit():
+            c = c.zfill(6)
         return c
 
     results = []

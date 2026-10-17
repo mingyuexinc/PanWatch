@@ -9,7 +9,7 @@ export const navigation = {
     monitorUniverse: '监控池',
     tradeJournal: '交易记录',
     agents: 'Agent',
-    evaluations: '验证中心',
+    evaluations: '评估',
     history: '历史',
     dataSources: '数据源',
     settings: '设置',

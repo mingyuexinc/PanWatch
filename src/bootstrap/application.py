@@ -47,6 +47,7 @@ from src.modules.research.api import (
 )
 from src.modules.strategy.api import factors
 from src.modules.trading_journal.api import trade_journal
+from src.modules.intraday_quality.api import router as intraday_quality_router
 from src.web.response import ResponseWrapperMiddleware
 
 app = FastAPI(
@@ -167,6 +168,12 @@ app.include_router(
     trade_journal.router,
     prefix="/api/trade-journal",
     tags=["trade-journal"],
+    dependencies=protected,
+)
+app.include_router(
+    intraday_quality_router,
+    prefix="/api/intraday-quality",
+    tags=["intraday-quality"],
     dependencies=protected,
 )
 app.include_router(
