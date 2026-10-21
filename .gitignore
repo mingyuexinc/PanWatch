@@ -34,3 +34,9 @@ docs/superpowers/
 
 # 本地调试令牌,禁止入库
 .demo_token
+
+# 本地临时目录（如 Wyckoff 参考仓克隆）
+.tmp/
+
+# ZCode 本地索引配置（规则与 .gitignore 同步，不入库）
+.zcodeignore
