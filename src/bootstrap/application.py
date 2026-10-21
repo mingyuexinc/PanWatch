@@ -28,6 +28,7 @@ from src.modules.assistant.export_jobs import context_export_runner
 from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
+    screener,
     klines,
     market,
     monitor_universe,
@@ -149,6 +150,12 @@ app.include_router(
     discovery.router,
     prefix="/api/discovery",
     tags=["discovery"],
+    dependencies=protected,
+)
+app.include_router(
+    screener.router,
+    prefix="/api/screener",
+    tags=["screener"],
     dependencies=protected,
 )
 app.include_router(

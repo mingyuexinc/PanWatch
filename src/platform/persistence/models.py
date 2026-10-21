@@ -1513,3 +1513,27 @@ class MCPCallLog(Base):
     duration_ms = Column(Integer, default=0)
     client_ip = Column(String, nullable=True)
     called_at = Column(DateTime, server_default=func.now())
+
+
+class NaturalLanguageScreenerQuery(Base):
+    """自然语言选股子问句(东财 selectSecurity)。"""
+
+    __tablename__ = "nl_screener_queries"
+    __table_args__ = (Index("ix_nl_screener_queries_sort", "sort_order", "id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    label = Column(String, nullable=False, default="新问句")
+    query_text = Column(Text, nullable=False, default="")
+    select_type = Column(String, nullable=False, default="A股")
+    sort_order = Column(Integer, nullable=False, default=0)
+    last_run_at = Column(DateTime, nullable=True)
+    last_row_count = Column(Integer, nullable=False, default=0)
+    last_data_source = Column(String, nullable=False, default="")
+    last_error = Column(Text, nullable=False, default="")
+    last_result_json = Column(JSON, default=list)
+    last_columns_json = Column(JSON, default=list)
+    last_run_query_hash = Column(String, nullable=False, default="")
+    last_validation_json = Column(JSON, default=dict)
+    last_intraday_scores_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -2142,6 +2142,21 @@ WHERE notification_id = :id
         logger.info("Archived %s idle intraday notification events", len(ids))
 
 
+def _m134_nl_screener_queries(conn: Connection) -> None:
+    from src.platform.persistence.models import NaturalLanguageScreenerQuery
+
+    NaturalLanguageScreenerQuery.__table__.create(conn, checkfirst=True)
+
+
+def _m135_nl_screener_intraday_scores(conn: Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "nl_screener_queries",
+        "last_intraday_scores_json",
+        "ALTER TABLE nl_screener_queries ADD COLUMN last_intraday_scores_json TEXT DEFAULT '{}'",
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(101, "agent_config_kind_and_visibility", _m101_agent_config_kind),
     Migration(102, "backfill_agent_kind_data", _m102_backfill_agent_kind),
@@ -2176,6 +2191,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(131, "assistant_conversation_titles", _m131_assistant_conversation_titles),
     Migration(132, 'assistant_context_exports', _m132_assistant_context_exports),
     Migration(133, "archive_idle_intraday_notifications", _m133_archive_idle_intraday_notifications),
+    Migration(134, "nl_screener_queries", _m134_nl_screener_queries),
+    Migration(135, "nl_screener_intraday_scores", _m135_nl_screener_intraday_scores),
 )
 
 
