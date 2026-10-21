@@ -13,5 +13,6 @@ export const navigation = {
     history: '历史',
     dataSources: '数据源',
     settings: '设置',
+    screener: '选股',
   },
 } as const

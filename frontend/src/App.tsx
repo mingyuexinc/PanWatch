@@ -1,6 +1,6 @@
 import { Suspense, useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
-import { TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, Github, BellRing, Sparkles, Activity, ClipboardCheck, MessageCircle, Radar, BookOpenText } from 'lucide-react'
+import { TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, Github, BellRing, Sparkles, Activity, ClipboardCheck, MessageCircle, Radar, BookOpenText, Filter } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { appApi } from '@panwatch/api/app'
 import { fetchAPI, isAuthenticated } from '@panwatch/api/client'
@@ -34,6 +34,7 @@ const {
   EvaluationsPage,
   AgentEvaluationsPage,
   AssistantPage,
+  StockScreenerPage,
 } = routePages
 
 const NAV_ITEMS: Array<{ to: string; icon: typeof LayoutDashboard; labelKey: NavigationItemKey }> = [
@@ -104,6 +105,13 @@ function App() {
   const desktopMoreNavItems = navItems.slice(5)
   const mobilePrimaryNavItems = navItems.slice(0, 5)
   const mobileMoreNavItems = navItems.slice(5)
+  const screenerNavItem = {
+    to: '/screener',
+    icon: Filter,
+    label: t('navigation:items.screener'),
+  }
+  const accountMenuNavItems = [screenerNavItem, ...desktopMoreNavItems]
+  const accountMenuNavItemsMobile = [screenerNavItem, ...mobileMoreNavItems]
 
   useEffect(() => {
     appApi.version()
@@ -218,7 +226,7 @@ function App() {
                 <ScrollText className="w-4 h-4" />
               </button>
               <AccountMenu
-                navItems={desktopMoreNavItems}
+                navItems={accountMenuNavItems}
                 mode={mode}
                 onSetMode={setMode}
                 onOpenSelfCheck={() => setSelfCheckOpen(true)}
@@ -257,7 +265,7 @@ function App() {
               </button>
               <AccountMenu
                 size="sm"
-                navItems={mobileMoreNavItems}
+                navItems={accountMenuNavItemsMobile}
                 mode={mode}
                 onSetMode={setMode}
                 onOpenSelfCheck={() => setSelfCheckOpen(true)}
@@ -317,6 +325,7 @@ function App() {
               <Route path="/assistant/:conversationId" element={<AssistantPage />} />
               <Route path="/datasources" element={<DataSourcesPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/screener" element={<StockScreenerPage />} />
               <Route path="/analysis/:symbol/:date" element={<AnalysisDetailPage />} />
             </Routes>
           </Suspense>

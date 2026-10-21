@@ -16,6 +16,7 @@ export const pageLoaders = {
   history: () => import('@/pages/History'),
   dataSources: () => import('@/pages/DataSources'),
   settings: () => import('@/pages/Settings'),
+  screener: () => import('@/pages/StockScreener'),
   analysisDetail: () => import('@/pages/AnalysisDetail'),
 } as const
 
@@ -37,6 +38,7 @@ export const routePages = {
   HistoryPage: lazy(pageLoaders.history),
   DataSourcesPage: lazy(pageLoaders.dataSources),
   SettingsPage: lazy(pageLoaders.settings),
+  StockScreenerPage: lazy(pageLoaders.screener),
   AnalysisDetailPage: lazy(pageLoaders.analysisDetail),
 } as const
 
@@ -55,6 +57,7 @@ const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boole
   { key: 'history', matches: pathname => pathname === '/history' },
   { key: 'dataSources', matches: pathname => pathname === '/datasources' },
   { key: 'settings', matches: pathname => pathname === '/settings' },
+  { key: 'screener', matches: pathname => pathname === '/screener' },
   { key: 'analysisDetail', matches: pathname => pathname.startsWith('/analysis/') },
 ]
 

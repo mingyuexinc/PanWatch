@@ -16,5 +16,6 @@ export const navigation = {
     history: 'History',
     dataSources: 'Data sources',
     settings: 'Settings',
+    screener: 'Screener',
   },
 } as const satisfies TranslationShape<typeof zhNavigation>
