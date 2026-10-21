@@ -133,7 +133,7 @@ function statusBadgeClass(status: string) {
   }
 }
 
-function badgeLabel(status: string, t: (k: string) => string, rowCount: number) {
+function badgeLabel(status: string, rowCount: number) {
   if (status === 'fresh' || status === 'stale') return String(rowCount)
   if (status === 'running') return '…'
   return '—'
@@ -378,11 +378,7 @@ export default function StockScreenerPage() {
     }
   }
 
-  const applyIntradayCompute = (
-    updated: ScreenerQuery,
-    scope: 'all' | 'selected',
-    selected: string[],
-  ) => {
+  const applyIntradayCompute = (updated: ScreenerQuery, scope: 'all' | 'selected') => {
     setDetail(updated)
     setPage(1)
     setSelectedCodes([])
@@ -415,7 +411,7 @@ export default function StockScreenerPage() {
     if ((detail?.rows?.length || 0) === 0) return
     setComputingScores(true)
     try {
-      applyIntradayCompute(await screenerApi.computeIntradayScores(active), 'all', [])
+      applyIntradayCompute(await screenerApi.computeIntradayScores(active), 'all')
     } catch (e) {
       toast(e instanceof Error ? e.message : t('computeFailed'), 'error')
     } finally {
@@ -431,11 +427,7 @@ export default function StockScreenerPage() {
     if (selectedCodes.length === 0) return
     setComputingScores(true)
     try {
-      applyIntradayCompute(
-        await screenerApi.computeIntradayScores(active, selectedCodes),
-        'selected',
-        selectedCodes,
-      )
+      applyIntradayCompute(await screenerApi.computeIntradayScores(active, selectedCodes), 'selected')
     } catch (e) {
       toast(e instanceof Error ? e.message : t('computeFailed'), 'error')
     } finally {
@@ -514,7 +506,7 @@ export default function StockScreenerPage() {
                   </div>
                 </span>
                 <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${statusBadgeClass(it.status)}`}>
-                  {badgeLabel(it.status, t, it.row_count)}
+                  {badgeLabel(it.status, it.row_count)}
                 </span>
               </button>
             ))}
