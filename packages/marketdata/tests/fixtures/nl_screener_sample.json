@@ -1,0 +1,17 @@
+{
+  "securityCount": 2,
+  "allResults": {
+    "result": {
+      "columns": [
+        {"field": "code", "displayName": "股票代码"},
+        {"field": "name", "displayName": "股票名称"},
+        {"field": "lbc", "displayName": "连板天数"},
+        {"field": "pct", "displayName": "涨跌幅"}
+      ],
+      "dataList": [
+        {"code": "000001", "name": "示例A", "lbc": 3, "pct": 10.01},
+        {"code": "600000", "name": "示例B", "lbc": 2, "pct": 9.99}
+      ]
+    }
+  }
+}

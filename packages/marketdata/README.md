@@ -77,6 +77,8 @@ md.health()                                     # {vendor: {success_rate, p50_la
 | `index_quotes` | `tencent_symbols` | `list[dict]` | 指数行情。按**原始腾讯符号**(`sh000001`/`hkHSI`/`usDJI`…)取,不经 `Symbol.parse`(指数代码可能与个股撞号)。不经 Engine/registry。 |
 | `index_klines` | `code, *, market, days=120` | `list[Bar]` | 指数日K。仅 `INDEX_SECID`(client.py)显式映射的指数(沪深300/上证/深成指/创业板指/恒生)有数据;未映射(如美股指数)→ `[]`(fail-soft)。不经 Engine/registry。 |
 | `hot_stocks` / `hot_boards` / `board_stocks` | 见下 | `list[HotStock/HotBoard]` | 东财热门榜。**市场级、不经 Engine**(非 symbol 模型),直连 `DiscoveryVendor`。`hot_stocks(*, market="CN", mode="turnover", limit=20, proxy=None)`、`hot_boards(*, market="CN", mode="gainers", limit=12, proxy=None)`、`board_stocks(*, board_code, mode="gainers", limit=20, proxy=None)`。 |
+| `natural_language_screen` | `query, *, select_type="A股", api_key, timeout=60` | `NaturalLanguageScreenResult` | 东财自然语言选股(直连 `selectSecurity`,与 mx-stocks-screener 同源)。需 `EM_API_KEY`。 |
+| `validate_continuous_limit_up_screen` | `screen, *, min_continuous_days=2` | `ScreenerValidationReport` | 用腾讯行情 + 东财涨停池交叉校验连板类选股结果。 |
 | `health` | — | `dict[str, dict]` | 每个 vendor 的内存健康度快照(成功率 / p50 延迟 / 最近错误 / 样本数)。 |
 
 > `klines`/`capital_flow`/`events` **不在包内缓存**(`cache_ttl_sec=0`),缓存/节流交给宿主(PanWatch 的 collector 层有市场态感知缓存);`quotes` 有 5s 短 TTL 防抖;`flash_news` 30s、`fundamentals`/`dragon_tiger`/`margin`/`shareholders`/`dividend` 300s、`northbound` 60s(均为包内 Engine 层 TTL,详见 `client.py`)。

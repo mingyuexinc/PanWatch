@@ -30,6 +30,15 @@ from marketdata.types import (
 )
 from marketdata.vendors.discovery import DiscoveryVendor
 from marketdata.vendors.news import EastmoneyStockNewsVendor
+from marketdata.vendors.nl_screener import (
+    NaturalLanguageScreenResult,
+    fetch_natural_language_screen,
+)
+from marketdata.nl_screener_validation import (
+    ScreenerValidationReport,
+    fetch_eastmoney_limit_up_pool,
+    validate_continuous_limit_up_screen,
+)
 
 # 指数 secid(东财):指数与个股 secid 前缀规则不同,必须显式映射,否则按个股规则会取错标的。
 # 美股指数东财K线不支持,未列入 → index_klines 返回空,fail-soft。
@@ -385,3 +394,39 @@ class MarketData:
     def board_stocks(self, **kw) -> list[HotStock]:
         """板块成分股榜单(东财,市场级、不经 Engine)。"""
         return self._discovery.board_stocks(**kw)
+
+    def natural_language_screen(
+        self,
+        query: str,
+        *,
+        select_type: str = "A股",
+        api_key: str,
+        timeout: float = 60.0,
+    ) -> NaturalLanguageScreenResult:
+        """东财自然语言选股(直连 selectSecurity,结构化返回)。"""
+        return fetch_natural_language_screen(
+            query,
+            select_type=select_type,
+            api_key=api_key,
+            timeout=timeout,
+        )
+
+    def validate_continuous_limit_up_screen(
+        self,
+        screen: NaturalLanguageScreenResult,
+        *,
+        min_continuous_days: int = 2,
+        include_zt_pool_reference: bool = True,
+    ) -> ScreenerValidationReport:
+        """用腾讯行情 + 可选东财涨停池交叉校验连板类选股结果。"""
+        from marketdata.vendors.nl_screener import extract_stock_codes
+
+        codes = extract_stock_codes(screen.rows)
+        quotes = self.quotes(codes, market="CN") if codes else []
+        ref = fetch_eastmoney_limit_up_pool() if include_zt_pool_reference else None
+        return validate_continuous_limit_up_screen(
+            screen,
+            quotes,
+            reference_pool=ref,
+            min_continuous_days=min_continuous_days,
+        )
