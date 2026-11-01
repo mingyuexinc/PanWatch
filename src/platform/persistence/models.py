@@ -1537,3 +1537,57 @@ class NaturalLanguageScreenerQuery(Base):
     last_intraday_scores_json = Column(JSON, default=dict)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NlScreenerStrategyConfig(Base):
+    """选股监控策略（singleton 配置，问句为池来源）。"""
+
+    __tablename__ = "nl_screener_strategy_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    query_id = Column(Integer, nullable=True)
+    monitor_start_minute = Column(Integer, nullable=False, default=570)
+    monitor_end_minute = Column(Integer, nullable=False, default=580)
+    gain_pct = Column(Integer, nullable=False, default=3)
+    notify_channel_id = Column(Integer, nullable=True)
+    last_test_trigger_at = Column(DateTime, nullable=True)
+    auto_monitor_enabled = Column(Boolean, nullable=False, default=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NlScreenerDaySession(Base):
+    """当日选股池 runtime（仅当日有效）。"""
+
+    __tablename__ = "nl_screener_day_sessions"
+    __table_args__ = (UniqueConstraint("trade_date", name="uq_nl_screener_day_session_date"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String, nullable=False)
+    query_id = Column(Integer, nullable=True)
+    pool_codes_json = Column(JSON, default=list)
+    prev_close_json = Column(JSON, default=dict)
+    pool_status = Column(String, nullable=False, default="pending")
+    run_attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=False, default="")
+    pool_built_at = Column(DateTime, nullable=True)
+
+
+class NlScreenerMonitorTrigger(Base):
+    """当日监控触发记录（同票同日一条）。"""
+
+    __tablename__ = "nl_screener_monitor_triggers"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "symbol", name="uq_nl_screener_trigger_day_symbol"),
+        Index("ix_nl_screener_trigger_date", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    name = Column(String, nullable=False, default="")
+    trigger_at = Column(DateTime, nullable=False)
+    trigger_price = Column(Float, nullable=False, default=0.0)
+    prev_close = Column(Float, nullable=False, default=0.0)
+    reason = Column(String, nullable=False, default="")
+    notify_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())

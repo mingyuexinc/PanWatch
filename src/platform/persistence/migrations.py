@@ -2157,6 +2157,51 @@ def _m135_nl_screener_intraday_scores(conn: Connection) -> None:
     )
 
 
+def _m137_nl_screener_monitor_strategy(conn: Connection) -> None:
+    from src.platform.persistence.models import (
+        NlScreenerDaySession,
+        NlScreenerMonitorTrigger,
+        NlScreenerStrategyConfig,
+    )
+
+    NlScreenerStrategyConfig.__table__.create(conn, checkfirst=True)
+    NlScreenerDaySession.__table__.create(conn, checkfirst=True)
+    NlScreenerMonitorTrigger.__table__.create(conn, checkfirst=True)
+
+
+def _m140_screener_auto_monitor(conn: Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "nl_screener_strategy_config",
+        "auto_monitor_enabled",
+        "ALTER TABLE nl_screener_strategy_config ADD COLUMN auto_monitor_enabled BOOLEAN NOT NULL DEFAULT 1",
+    )
+
+
+def _m139_screener_action_timestamps(conn: Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "nl_screener_strategy_config",
+        "last_test_trigger_at",
+        "ALTER TABLE nl_screener_strategy_config ADD COLUMN last_test_trigger_at DATETIME",
+    )
+
+
+def _m138_screener_monitor_notify(conn: Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "nl_screener_strategy_config",
+        "notify_channel_id",
+        "ALTER TABLE nl_screener_strategy_config ADD COLUMN notify_channel_id INTEGER",
+    )
+    _add_column_if_missing(
+        conn,
+        "nl_screener_monitor_triggers",
+        "notify_sent_at",
+        "ALTER TABLE nl_screener_monitor_triggers ADD COLUMN notify_sent_at DATETIME",
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(101, "agent_config_kind_and_visibility", _m101_agent_config_kind),
     Migration(102, "backfill_agent_kind_data", _m102_backfill_agent_kind),
@@ -2193,6 +2238,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(133, "archive_idle_intraday_notifications", _m133_archive_idle_intraday_notifications),
     Migration(134, "nl_screener_queries", _m134_nl_screener_queries),
     Migration(135, "nl_screener_intraday_scores", _m135_nl_screener_intraday_scores),
+    Migration(137, "nl_screener_monitor_strategy", _m137_nl_screener_monitor_strategy),
+    Migration(138, "screener_monitor_notify", _m138_screener_monitor_notify),
+    Migration(139, "screener_action_timestamps", _m139_screener_action_timestamps),
+    Migration(140, "screener_auto_monitor", _m140_screener_auto_monitor),
 )
 
 
