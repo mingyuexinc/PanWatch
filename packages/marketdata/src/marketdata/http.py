@@ -63,6 +63,51 @@ def record_error(msg: str) -> None:
 _THROTTLE_LOCK = threading.Lock()
 _last_call: dict[str, float] = {}
 
+# 东财行情 host：走用户 HTTP 代理时常被断连；默认先直连再回退 env 代理。
+_EASTMONEY_DIRECT_MARKERS = (
+    "push2his.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2ex.eastmoney.com",
+)
+
+EASTMONEY_NO_PROXY_ENTRIES: tuple[str, ...] = (
+    ".eastmoney.com",
+    "push2his.eastmoney.com",
+    "33.push2his.eastmoney.com",
+    "63.push2his.eastmoney.com",
+    "push2.eastmoney.com",
+    "push2ex.eastmoney.com",
+)
+
+
+def is_eastmoney_direct_host(host_key: str) -> bool:
+    h = (host_key or "").lower()
+    return any(m in h for m in _EASTMONEY_DIRECT_MARKERS)
+
+
+def merge_eastmoney_no_proxy() -> None:
+    """把东财相关 host 并入 NO_PROXY（与 HTTP_PROXY 并存时仍直连东财）。"""
+    import os
+
+    cur = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in cur.split(",") if p.strip()]
+    existing = {p.lower() for p in parts}
+    for entry in EASTMONEY_NO_PROXY_ENTRIES:
+        if entry.lower() not in existing:
+            parts.append(entry)
+            existing.add(entry.lower())
+    merged = ",".join(parts)
+    os.environ["NO_PROXY"] = merged
+    os.environ["no_proxy"] = merged
+
+
+def _trust_env_sequence(host_key: str, trust_env: bool, proxy: str | None) -> tuple[bool, ...]:
+    if proxy is not None:
+        return (trust_env,)
+    if trust_env and is_eastmoney_direct_host(host_key):
+        return (False, True)
+    return (trust_env,)
+
 
 def throttle(host_key: str, min_interval_s: float) -> None:
     """保证对同一 host 的请求间隔 ≥ min_interval_s。"""
@@ -102,31 +147,37 @@ def market_get(
     """
     effective_proxy = proxy
     last_err: Any = None
-    for attempt in range(max(1, retries + 1)):
-        throttle(host_key, min_interval_s)
-        try:
-            with httpx.Client(
-                follow_redirects=follow_redirects,
-                timeout=timeout + attempt * 4,
-                headers=headers,
-                trust_env=trust_env,
-                verify=verify,
-                **({"proxy": effective_proxy} if effective_proxy else {}),
-            ) as client:
-                resp = client.get(url, params=params)
-                if raise_for_status:
-                    resp.raise_for_status()
-                if parse == "json":
-                    return resp.json()
-                if parse == "content":
-                    return resp.content
-                if encoding:
-                    return resp.content.decode(encoding, errors="ignore")
-                return resp.text
-        except Exception as e:
-            last_err = e
-        if attempt < retries:
-            time.sleep(backoff * (attempt + 1) + random.uniform(0, jitter))
+    use_http1 = is_eastmoney_direct_host(host_key)
+    for te in _trust_env_sequence(host_key, trust_env, effective_proxy):
+        for attempt in range(max(1, retries + 1)):
+            throttle(host_key, min_interval_s)
+            try:
+                client_kw: dict[str, Any] = {
+                    "follow_redirects": follow_redirects,
+                    "timeout": timeout + attempt * 4,
+                    "headers": headers,
+                    "trust_env": te,
+                    "verify": verify,
+                }
+                if use_http1:
+                    client_kw["http2"] = False
+                if effective_proxy:
+                    client_kw["proxy"] = effective_proxy
+                with httpx.Client(**client_kw) as client:
+                    resp = client.get(url, params=params)
+                    if raise_for_status:
+                        resp.raise_for_status()
+                    if parse == "json":
+                        return resp.json()
+                    if parse == "content":
+                        return resp.content
+                    if encoding:
+                        return resp.content.decode(encoding, errors="ignore")
+                    return resp.text
+            except Exception as e:
+                last_err = e
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1) + random.uniform(0, jitter))
 
     if last_err is not None:
         label = log_label or host_key

@@ -157,14 +157,23 @@ def fetch_eastmoney_kline(secid: str, days: int) -> list[Bar]:
 
     供指数等显式符号场景复用(指数与个股 secid 前缀规则不同,必须显式映射)。
     """
-    payload = market_get(
-        _EASTMONEY_URL, host_key="push2his.eastmoney.com", min_interval_s=0.2,
-        params={"secid": secid, "klt": "101", "fqt": "1",
-                "lmt": str(min(max(int(days or 1), 1200), 20000)), "end": "20500101",
-                "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56",
-                "ut": "fa5fd1943c7b386f172d6893dbfba10b"},
-        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"},
-        timeout=12, retries=1, parse="json", log_label="东财K线", symbol=secid,
+    from marketdata.vendors.eastmoney_hosts import EM_KLINE_PATH, em_get_json, em_kline_params
+
+    day_params = em_kline_params(
+        secid,
+        klt="101",
+        beg="0",
+        end="20500101",
+        lmt=str(min(max(int(days or 1), 1200), 20000)),
+        with_ut=False,
+    )
+    payload = em_get_json(
+        EM_KLINE_PATH,
+        day_params,
+        symbol=secid,
+        log_label="东财K线",
+        timeout=12,
+        retries=1,
     )
     raw = (payload or {}).get("data", {}).get("klines", []) if isinstance(payload, dict) else []
     out: list[Bar] = []

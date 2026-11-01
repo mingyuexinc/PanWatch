@@ -1,3 +1,5 @@
+import os
+
 import httpx
 
 import marketdata.http as mh
@@ -79,6 +81,30 @@ def test_market_get_omits_proxy_when_not_set(monkeypatch):
     monkeypatch.setattr(mh.httpx, "Client", _CapturingClient)
     mh.market_get("http://x", host_key="t4e", retries=0)
     assert "proxy" not in _CapturingClient.captured_kwargs
+
+
+def test_eastmoney_host_uses_direct_first(monkeypatch):
+    calls: list[bool] = []
+
+    class _TrustClient(_OkClient):
+        def __init__(self, **kw):
+            calls.append(kw.get("trust_env", True))
+
+    monkeypatch.setattr(mh.httpx, "Client", _TrustClient)
+    mh.market_get(
+        "https://33.push2his.eastmoney.com/x",
+        host_key="33.push2his.eastmoney.com",
+        retries=0,
+    )
+    assert calls == [False]
+
+
+def test_merge_eastmoney_no_proxy(monkeypatch):
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    mh.merge_eastmoney_no_proxy()
+    assert "33.push2his.eastmoney.com" in os.environ.get("NO_PROXY", "")
+    assert ".eastmoney.com" in os.environ.get("NO_PROXY", "")
 
 
 def test_throttle_sleeps_on_second_call(monkeypatch):
