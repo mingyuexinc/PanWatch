@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.modules.market.ma_hold.history_kline import prev_day_closes_as_of
+from src.modules.market.daily_kline import prev_day_closes_as_of
 
 logger = logging.getLogger(__name__)
 
