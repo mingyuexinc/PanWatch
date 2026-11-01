@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from src.modules.market import nl_screener_service as svc
+from src.modules.market import screener_monitor_service as monitor_svc
 from src.platform.persistence.database import get_db
 
 router = APIRouter()
@@ -89,3 +90,60 @@ def compute_screener_intraday_scores(
 @router.get("/merged")
 def get_merged_screener_mock():
     return svc.merged_mock()
+
+
+class ScreenerStrategyUpdate(BaseModel):
+    query_id: int | None = None
+    monitor_start: str | None = Field(default=None, description="HH:MM 整分")
+    monitor_end: str | None = Field(default=None, description="HH:MM 整分")
+    gain_pct: int | None = Field(default=None, ge=0, le=10)
+    notify_channel_id: int | None = Field(default=None, description="设置中注册的通知渠道 ID；0 表示清空绑定")
+    auto_monitor_enabled: bool | None = None
+
+
+@router.get("/strategy")
+def get_screener_strategy(db: Session = Depends(get_db)):
+    return monitor_svc.get_strategy(db)
+
+
+@router.put("/strategy")
+def update_screener_strategy(body: ScreenerStrategyUpdate, db: Session = Depends(get_db)):
+    return monitor_svc.update_strategy(
+        db,
+        query_id=body.query_id,
+        monitor_start=body.monitor_start,
+        monitor_end=body.monitor_end,
+        gain_pct=body.gain_pct,
+        notify_channel_id=body.notify_channel_id,
+        auto_monitor_enabled=body.auto_monitor_enabled,
+    )
+
+
+@router.post("/strategy/run-morning")
+def screener_run_morning_job(db: Session = Depends(get_db)):
+    """手动触发 09:25 问句建池 + 竞价扫（与定时任务相同）。"""
+    return monitor_svc.run_morning_open_job(db)
+
+
+@router.post("/strategy/poll-live")
+def screener_poll_live(db: Session = Depends(get_db)):
+    """手动触发一轮 live 监控（需在监控窗口内且池已就绪）。"""
+    result = monitor_svc.run_live_monitor_poll(db)
+    if result is None:
+        return {"skipped": "unknown"}
+    return result
+
+
+@router.post("/strategy/build-pool")
+def build_screener_pool(db: Session = Depends(get_db)):
+    return monitor_svc.build_today_pool(db, run_screener=True)
+
+
+@router.post("/strategy/scan-once")
+def screener_scan_once(db: Session = Depends(get_db)):
+    return monitor_svc.scan_once(db)
+
+
+@router.post("/strategy/test-trigger")
+def screener_test_trigger(db: Session = Depends(get_db)):
+    return monitor_svc.test_trigger(db)

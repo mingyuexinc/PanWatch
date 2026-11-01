@@ -5,16 +5,25 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from marketdata.nl_screener_validation import (
+    filter_limit_up_lookback_rows,
+    parse_limit_up_lookback_rule,
+    resolve_limit_up_lookback_calendar,
+)
 
 from sqlalchemy.orm import Session
 
 from src.modules.intraday_quality.baostock_fetch import baostock_session, normalize_cn_symbol, today_iso
+from src.modules.market.screener_datetime import CN_TZ, format_beijing_display, now_cn_naive
 from src.modules.intraday_quality.scoring import compute_strength_score
 from src.platform.marketdata.marketdata_client import get_market_data
+from src.platform.marketdata.models import MarketCode
 from src.platform.marketdata.nl_screener import resolve_em_api_key
+from src.platform.scheduling.trading_calendar import is_trading_day
 from src.platform.persistence.models import NaturalLanguageScreenerQuery
 from src.web.errors import api_error
 
@@ -28,6 +37,19 @@ _CODE_KEY_PATTERNS = (
     re.compile(r"^code$", re.I),
 )
 _SH_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _cn_trading_days_up_to(anchor: date, count: int) -> list[str]:
+    days: list[date] = []
+    cur = anchor
+    for _ in range(500):
+        if is_trading_day(MarketCode.CN, cur):
+            days.append(cur)
+            if len(days) >= count:
+                break
+        cur -= timedelta(days=1)
+    days.sort()
+    return [d.isoformat() for d in days]
 
 
 def _query_hash(query_text: str, select_type: str) -> str:
@@ -57,7 +79,7 @@ def _row_to_dict(row: NaturalLanguageScreenerQuery, *, include_result: bool) -> 
         "select_type": row.select_type or "A股",
         "sort_order": row.sort_order,
         "status": status,
-        "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
+        "last_run_at": format_beijing_display(row.last_run_at) if row.last_run_at else None,
         "row_count": int(row.last_row_count or 0),
         "data_source": row.last_data_source or "",
         "last_error": row.last_error or "",
@@ -187,8 +209,44 @@ def run_query(db: Session, query_id: int) -> dict[str, Any]:
             api_key=api_key,
             timeout=90.0,
         )
+        rows_out = [dict(r) for r in result.rows]
         blob = f"{row.label or ''} {text}"
-        if any(k in blob for k in ("连板", "涨停")):
+        lookback_rule = parse_limit_up_lookback_rule(text)
+        if lookback_rule and (row.select_type or "A股") == "A股":
+            anchor = datetime.now(_SH_TZ).date()
+            while not is_trading_day(MarketCode.CN, anchor):
+                anchor -= timedelta(days=1)
+            cal = resolve_limit_up_lookback_calendar(
+                _cn_trading_days_up_to(anchor, lookback_rule.lookback_trading_days + 3),
+                lookback_trading_days=lookback_rule.lookback_trading_days,
+            )
+            if cal:
+                _anchor, prev_day, lookback = cal
+                rows_out, validation = filter_limit_up_lookback_rows(
+                    rows_out,
+                    lookback_rule,
+                    prev_trade_date=prev_day,
+                    lookback_dates=lookback,
+                )
+                row.last_validation_json = {
+                    "ok": validation.ok and not validation.failures,
+                    "checked_codes": validation.checked_codes,
+                    "failures": validation.failures,
+                    "warnings": validation.warnings,
+                    "mode": "limit_up_lookback",
+                    "anchor_trade_date": _anchor,
+                    "prev_trade_date": prev_day,
+                    "lookback_dates": lookback,
+                    "removed_count": len(validation.failures),
+                }
+            else:
+                row.last_validation_json = {
+                    "ok": False,
+                    "mode": "limit_up_lookback",
+                    "warnings": ["交易日历不足，跳过后置过滤"],
+                    "failures": [],
+                }
+        elif "连板" in blob:
             validation = md.validate_continuous_limit_up_screen(result, min_continuous_days=2)
             row.last_validation_json = {
                 "ok": validation.ok,
@@ -199,11 +257,11 @@ def run_query(db: Session, query_id: int) -> dict[str, Any]:
             }
         else:
             row.last_validation_json = {"ok": True, "mode": "skipped", "warnings": [], "failures": []}
-        row.last_result_json = [dict(r) for r in result.rows]
+        row.last_result_json = rows_out
         row.last_columns_json = list(result.column_names)
-        row.last_row_count = result.row_count
+        row.last_row_count = len(rows_out)
         row.last_data_source = result.data_source
-        row.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        row.last_run_at = now_cn_naive()
         row.last_run_query_hash = _query_hash(text, row.select_type or "A股")
         row.last_intraday_scores_json = {}
         row.last_error = ""
@@ -239,10 +297,7 @@ def _select_type_to_market(select_type: str) -> str:
 
 def _score_trade_date(row: NaturalLanguageScreenerQuery) -> str:
     if row.last_run_at:
-        dt = row.last_run_at
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(_SH_TZ).date().isoformat()
+        return row.last_run_at.replace(tzinfo=CN_TZ).date().isoformat()
     return today_iso()
 
 

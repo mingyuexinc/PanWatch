@@ -28,6 +28,7 @@ from src.platform.ai.ai_failover import build_failover_client
 from src.platform.notifications.notifier import NotifierManager
 from src.modules.automation.agent_scheduler import AgentScheduler
 from src.modules.market.price_alert_scheduler import PriceAlertScheduler
+from src.modules.market.screener_monitor_scheduler import ScreenerMonitorScheduler
 from src.modules.paper_trading.paper_trading_scheduler import PaperTradingScheduler
 from src.modules.research.context_scheduler import ContextMaintenanceScheduler
 from src.modules.automation.agent_runs import record_agent_run
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 # 全局 scheduler 实例，供 agents API 调用
 scheduler: AgentScheduler | None = None
 price_alert_scheduler: PriceAlertScheduler | None = None
+screener_monitor_scheduler: ScreenerMonitorScheduler | None = None
 paper_trading_scheduler: PaperTradingScheduler | None = None
 context_maintenance_scheduler: ContextMaintenanceScheduler | None = None
 
@@ -65,6 +67,12 @@ def apply_proxy_env(proxy: str | None) -> None:
         os.environ["HTTP_PROXY"] = p
         os.environ["HTTPS_PROXY"] = p
         os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,::1,0.0.0.0")
+        try:
+            from marketdata.http import merge_eastmoney_no_proxy
+
+            merge_eastmoney_no_proxy()
+        except Exception:
+            pass
         logger.info(f"HTTP/HTTPS 代理已应用: {p}")
     else:
         for key in ("HTTP_PROXY", "HTTPS_PROXY"):
@@ -86,6 +94,12 @@ def setup_proxy():
             f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"
         )
         os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,::1,0.0.0.0")
+        try:
+            from marketdata.http import merge_eastmoney_no_proxy
+
+            merge_eastmoney_no_proxy()
+        except Exception:
+            pass
         return
 
     proxy = ""
@@ -1580,7 +1594,7 @@ async def lifespan(app):
     except Exception as e:
         logger.warning(f"交易日历预热调度失败(降级为只判周末): {e}")
 
-    global scheduler, price_alert_scheduler, paper_trading_scheduler, context_maintenance_scheduler
+    global scheduler, price_alert_scheduler, screener_monitor_scheduler, paper_trading_scheduler, context_maintenance_scheduler
     scheduler = build_scheduler()
     scheduler.start()
     logger.info("Agent 调度器已启动")
@@ -1594,6 +1608,16 @@ async def lifespan(app):
         logger.info("价格提醒调度器已启动")
     except Exception as e:
         logger.error(f"价格提醒调度器启动失败: {e}")
+    try:
+        settings = Settings()
+        screener_monitor_scheduler = ScreenerMonitorScheduler(
+            timezone=settings.app_timezone,
+            poll_interval_s=3.0,
+        )
+        screener_monitor_scheduler.start()
+        logger.info("选股监控调度器已启动")
+    except Exception as e:
+        logger.error(f"选股监控调度器启动失败: {e}")
     try:
         settings = Settings()
         paper_trading_scheduler = PaperTradingScheduler(
@@ -1640,6 +1664,9 @@ async def lifespan(app):
         if price_alert_scheduler:
             price_alert_scheduler.shutdown()
             logger.info("价格提醒调度器已关闭")
+        if screener_monitor_scheduler:
+            screener_monitor_scheduler.shutdown()
+            logger.info("选股监控调度器已关闭")
         if paper_trading_scheduler:
             paper_trading_scheduler.shutdown()
             logger.info("模拟盘调度器已关闭")
@@ -1671,7 +1698,9 @@ if os.path.exists(static_dir):
 
 
 if __name__ == "__main__":
-    print("盯盘侠启动: http://127.0.0.1:8000")
+    _ui = os.environ.get("PANWATCH_UI_URL", "http://127.0.0.1:5183")
+    print("PanWatch API: http://127.0.0.1:8000")
+    print(f"PanWatch 前端(开发): {_ui}")
     print("API 文档: http://127.0.0.1:8000/docs")
     # 生产(Docker `python server.py`)不应开 reload:uvicorn 文件监听会多起一个 reloader
     # 子进程、浪费资源,且监听 data/ 写入易误触发重启。本地热重载用 `make dev-api`
