@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { screenerApi, type ScreenerQuery, type ScreenerMergedMock } from '@panwatch/api'
+import {
+  fetchAPI,
+  screenerApi,
+  type NotifyChannel,
+  type ScreenerQuery,
+  type ScreenerMergedMock,
+  type ScreenerStrategyPayload,
+} from '@panwatch/api'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Label } from '@panwatch/base-ui/components/ui/label'
@@ -10,6 +17,47 @@ import { marketSignTextClass } from '@/lib/market-colors'
 
 const PAGE_SIZE = 10
 const SELECT_TYPES = ['A股', '港股', '美股', '基金', 'ETF', '可转债', '板块'] as const
+
+const GAIN_PCT_OPTIONS = Array.from({ length: 11 }, (_, i) => i)
+
+const MONITOR_WINDOW_PRESETS = [
+  { id: 'open5' as const, start: '09:30', end: '09:35' },
+  { id: 'open10' as const, start: '09:30', end: '09:40' },
+  { id: 'open30' as const, start: '09:30', end: '10:00' },
+]
+
+function normalizeHm(value: string): string {
+  const parts = value.trim().split(':')
+  if (parts.length < 2) return value
+  const h = Number(parts[0])
+  const m = Number(parts[1])
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return value
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function hmToMinutes(value: string): number | null {
+  const norm = normalizeHm(value)
+  const parts = norm.split(':')
+  if (parts.length !== 2) return null
+  const h = Number(parts[0])
+  const m = Number(parts[1])
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null
+  return h * 60 + m
+}
+
+function isMonitorWindowValid(start: string, end: string): boolean {
+  const a = hmToMinutes(start)
+  const b = hmToMinutes(end)
+  return a != null && b != null && a < b
+}
+
+function matchingMonitorPreset(start: string, end: string) {
+  const s = normalizeHm(start)
+  const e = normalizeHm(end)
+  return MONITOR_WINDOW_PRESETS.find(p => p.start === s && p.end === e)?.id ?? null
+}
+
+type ResultTab = 'screener' | 'triggers'
 
 /** 选股结果固定展示列（与东财返回的其它字段解耦，避免整表渲染导致布局撑爆） */
 const ROW_FIELD_RULES = {
@@ -27,18 +75,6 @@ function pickRowField(row: Record<string, string>, rules: readonly RegExp[]): st
   return '—'
 }
 
-function rowCodeKey(row: Record<string, string>): string {
-  const raw = pickRowField(row, ROW_FIELD_RULES.code)
-  if (raw === '—') return ''
-  if (/^\d+$/.test(raw)) return raw.padStart(6, '0')
-  return raw
-}
-
-function formatIntradayScore(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
-  return value.toFixed(1)
-}
-
 function parseChangePctNum(raw: string): number | null {
   if (!raw || raw === '—') return null
   const num = parseFloat(raw.replace(/[^\d.-]/g, ''))
@@ -51,6 +87,20 @@ function formatChangePctDisplay(raw: string): string {
   if (num == null) return raw || '—'
   const sign = num > 0 ? '+' : ''
   return `${sign}${num.toFixed(2)}%`
+}
+
+/** ISO / 后端 datetime 展示为 YYYY-MM-DD HH:mm:ss */
+function formatTriggerAtDisplay(raw: string | null | undefined): string {
+  if (!raw || raw === '—') return '—'
+  const text = raw.trim()
+  const noFrac = text.replace(/\.\d+(?=[Z+-]|$)/, '').replace(/Z$/i, '')
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(noFrac)) {
+    return noFrac.replace('T', ' ')
+  }
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$/.test(noFrac)) {
+    return `${noFrac.replace('T', ' ')}:00`
+  }
+  return text.replace('T', ' ')
 }
 
 type PanelId = number | 'merged'
@@ -147,11 +197,10 @@ export default function StockScreenerPage() {
   const [detail, setDetail] = useState<ScreenerQuery | null>(null)
   const [merged, setMerged] = useState<ScreenerMergedMock | null>(null)
   const [page, setPage] = useState(1)
+  const [triggerPage, setTriggerPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
-  const [computingScores, setComputingScores] = useState(false)
-  const [selectedCodes, setSelectedCodes] = useState<string[]>([])
   const [draftLabel, setDraftLabel] = useState('')
   const [draftText, setDraftText] = useState('')
   const [draftType, setDraftType] = useState<string>('A股')
@@ -160,6 +209,16 @@ export default function StockScreenerPage() {
   const contextRef = useRef<{ id: number; x: number; y: number } | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
   const [contextPos, setContextPos] = useState({ x: 0, y: 0 })
+  const [strategyPayload, setStrategyPayload] = useState<ScreenerStrategyPayload | null>(null)
+  const [monitorStart, setMonitorStart] = useState('09:30')
+  const [monitorEnd, setMonitorEnd] = useState('09:40')
+  const [gainPct, setGainPct] = useState(3)
+  const [resultTab, setResultTab] = useState<ResultTab>('screener')
+  const [testTriggering, setTestTriggering] = useState(false)
+  const [lastScanMessage, setLastScanMessage] = useState<string | null>(null)
+  const [notifyChannels, setNotifyChannels] = useState<NotifyChannel[]>([])
+  const [notifyChannelId, setNotifyChannelId] = useState<number | null>(null)
+  const [autoMonitorEnabled, setAutoMonitorEnabled] = useState(true)
 
   const loadList = useCallback(async () => {
     const res = await screenerApi.listQueries()
@@ -172,6 +231,21 @@ export default function StockScreenerPage() {
     setMerged(data)
   }, [])
 
+  const applyStrategyPayload = useCallback((data: ScreenerStrategyPayload) => {
+    setStrategyPayload(data)
+    setMonitorStart(normalizeHm(data.config.monitor_start))
+    setMonitorEnd(normalizeHm(data.config.monitor_end))
+    setGainPct(data.config.gain_pct)
+    setNotifyChannelId(data.config.notify_channel_id ?? null)
+    setAutoMonitorEnabled(data.config.auto_monitor_enabled !== false)
+  }, [])
+
+  const loadStrategy = useCallback(async () => {
+    const data = await screenerApi.getStrategy()
+    applyStrategyPayload(data)
+    return data
+  }, [applyStrategyPayload])
+
   const loadDetail = useCallback(async (id: number) => {
     const data = await screenerApi.getQuery(id)
     setDetail(data)
@@ -179,7 +253,6 @@ export default function StockScreenerPage() {
     setDraftText(data.query_text)
     setDraftType(data.select_type)
     setPage(1)
-    setSelectedCodes([])
     return data
   }, [])
 
@@ -189,6 +262,13 @@ export default function StockScreenerPage() {
         setLoading(true)
         const list = await loadList()
         await loadMerged()
+        await loadStrategy()
+        try {
+          const ch = await fetchAPI<NotifyChannel[]>('/channels')
+          setNotifyChannels(ch)
+        } catch {
+          setNotifyChannels([])
+        }
         if (list.length > 0) {
           const firstId = list[0].id
           setActive(firstId)
@@ -200,7 +280,67 @@ export default function StockScreenerPage() {
         setLoading(false)
       }
     })()
-  }, [loadDetail, loadList, loadMerged, t, toast])
+  }, [loadDetail, loadList, loadMerged, loadStrategy, t, toast])
+
+  const strategyBoundToActive =
+    typeof active === 'number' && strategyPayload?.config.query_id === active
+
+  const applyMonitorWindow = (start: string, end: string) => {
+    setMonitorStart(normalizeHm(start))
+    setMonitorEnd(normalizeHm(end))
+  }
+
+  const persistMonitorStrategy = async (queryId: number) => {
+    const data = await screenerApi.updateStrategy({
+      query_id: queryId,
+      monitor_start: monitorStart,
+      monitor_end: monitorEnd,
+      gain_pct: gainPct,
+      notify_channel_id: notifyChannelId!,
+      auto_monitor_enabled: autoMonitorEnabled,
+    })
+    applyStrategyPayload(data)
+  }
+
+  const onTestTrigger = async () => {
+    if (typeof active !== 'number') return
+    if (!isMonitorWindowValid(monitorStart, monitorEnd)) {
+      toast(t('monitorTimeInvalid'), 'error')
+      return
+    }
+    if (notifyChannelId == null) {
+      toast(t('notifyChannelRequired'), 'error')
+      return
+    }
+    setTestTriggering(true)
+    try {
+      await persistMonitorStrategy(active)
+      const data = await screenerApi.testTrigger()
+      applyStrategyPayload(data)
+      if (typeof active === 'number') await loadDetail(active)
+      const scan = data.scan
+      if (scan) {
+        const summary =
+          scan.message ||
+          t('testTriggerDone', { date: scan.trade_date, count: scan.new_triggers ?? 0 })
+        setLastScanMessage(summary)
+        toast(summary, scan.new_triggers > 0 ? 'success' : 'info')
+      } else {
+        setLastScanMessage(null)
+        toast(t('testTriggerDone', { date: '—', count: 0 }), 'info')
+      }
+      setResultTab('triggers')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : t('testTriggerFailed'), 'error')
+      try {
+        await loadStrategy()
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      setTestTriggering(false)
+    }
+  }
 
   const refreshActive = useCallback(async () => {
     if (active === 'merged') {
@@ -229,6 +369,16 @@ export default function StockScreenerPage() {
 
   const onSave = async () => {
     if (typeof active !== 'number' || !detail) return
+    if (screenEngine === 'em') {
+      if (!isMonitorWindowValid(monitorStart, monitorEnd)) {
+        toast(t('monitorTimeInvalid'), 'error')
+        return
+      }
+      if (notifyChannelId == null) {
+        toast(t('notifyChannelRequired'), 'error')
+        return
+      }
+    }
     setSaving(true)
     try {
       const updated = await screenerApi.updateQuery(active, {
@@ -238,6 +388,9 @@ export default function StockScreenerPage() {
       })
       setDetail(updated)
       setItems(prev => prev.map(it => (it.id === updated.id ? { ...it, ...updated, rows: undefined, columns: undefined } : it)))
+      if (screenEngine === 'em') {
+        await persistMonitorStrategy(active)
+      }
       toast(t('saved'), 'success')
     } catch (e) {
       toast(e instanceof Error ? e.message : t('saveFailed'), 'error')
@@ -328,23 +481,6 @@ export default function StockScreenerPage() {
     }
   }, [])
 
-  const scoreEntries = useMemo(
-    () => detail?.intraday_scores?.scores ?? {},
-    [detail?.intraday_scores?.scores],
-  )
-
-  const lookupScore = useCallback(
-    (code: string) => {
-      if (!code) return { score: null as number | null, error: null as string | null }
-      const entry = scoreEntries[code]
-      return {
-        score: entry?.score ?? null,
-        error: entry?.error ?? null,
-      }
-    },
-    [scoreEntries],
-  )
-
   const displayRows = useMemo(() => detail?.rows || [], [detail?.rows])
 
   const pagedRows = useMemo(() => {
@@ -354,86 +490,16 @@ export default function StockScreenerPage() {
 
   const pageCount = Math.max(1, Math.ceil(displayRows.length / PAGE_SIZE))
 
-  const cnQuery = (detail?.select_type || draftType) === 'A股'
+  const triggerRows = useMemo(() => strategyPayload?.triggers ?? [], [strategyPayload?.triggers])
+  const triggerPageCount = Math.max(1, Math.ceil(triggerRows.length / PAGE_SIZE))
+  const pagedTriggers = useMemo(() => {
+    const start = (triggerPage - 1) * PAGE_SIZE
+    return triggerRows.slice(start, start + PAGE_SIZE)
+  }, [triggerRows, triggerPage])
 
-  const toggleRowSelected = (code: string) => {
-    if (!code) return
-    setSelectedCodes(prev => (prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]))
-  }
-
-  const allPagedSelected =
-    pagedRows.length > 0 &&
-    pagedRows.every(row => {
-      const code = rowCodeKey(row)
-      return code && selectedCodes.includes(code)
-    })
-
-  const togglePageSelection = () => {
-    const codes = pagedRows.map(rowCodeKey).filter(Boolean)
-    if (codes.length === 0) return
-    if (allPagedSelected) {
-      setSelectedCodes(prev => prev.filter(c => !codes.includes(c)))
-    } else {
-      setSelectedCodes(prev => [...new Set([...prev, ...codes])])
-    }
-  }
-
-  const applyIntradayCompute = (updated: ScreenerQuery, scope: 'all' | 'selected') => {
-    setDetail(updated)
-    setPage(1)
-    setSelectedCodes([])
-    const meta = updated.intraday_compute
-    const errList = meta?.errors ?? []
-    const computedCount = meta?.computed_count ?? 0
-    const failed = errList.length
-    const ok = Math.max(0, computedCount - failed)
-    if (failed > 0) {
-      const detailText = errList
-        .slice(0, 2)
-        .map(e => `${e.symbol}(${e.test_date}): ${e.message}`)
-        .join('；')
-      toast(`${t('computePartial', { ok, failed })} ${detailText}`, 'error')
-    } else {
-      toast(
-        scope === 'selected'
-          ? t('computeSelectedDone', { count: computedCount })
-          : t('computeDone', { count: computedCount }),
-        'success',
-      )
-    }
-  }
-
-  const onComputeAllScores = async () => {
-    if (typeof active !== 'number' || !cnQuery) {
-      toast(t('scoreCnOnly'), 'info')
-      return
-    }
-    if ((detail?.rows?.length || 0) === 0) return
-    setComputingScores(true)
-    try {
-      applyIntradayCompute(await screenerApi.computeIntradayScores(active), 'all')
-    } catch (e) {
-      toast(e instanceof Error ? e.message : t('computeFailed'), 'error')
-    } finally {
-      setComputingScores(false)
-    }
-  }
-
-  const onBatchComputeScores = async () => {
-    if (typeof active !== 'number' || !cnQuery) {
-      toast(t('scoreCnOnly'), 'info')
-      return
-    }
-    if (selectedCodes.length === 0) return
-    setComputingScores(true)
-    try {
-      applyIntradayCompute(await screenerApi.computeIntradayScores(active, selectedCodes), 'selected')
-    } catch (e) {
-      toast(e instanceof Error ? e.message : t('computeFailed'), 'error')
-    } finally {
-      setComputingScores(false)
-    }
-  }
+  useEffect(() => {
+    setTriggerPage(1)
+  }, [triggerRows.length, resultTab])
 
   if (loading) {
     return (
@@ -775,95 +841,318 @@ export default function StockScreenerPage() {
                 </div>
               )}
 
+              {screenEngine === 'em' && (
+                <section className="rounded-lg border border-border/60 bg-card/40 px-3 py-2.5 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 space-y-1.5">
+                      <h3 className="text-[13px] font-semibold leading-tight">{t('monitorStrategy')}</h3>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">{t('monitorStrategyHint')}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="h-8 shrink-0"
+                      variant="secondary"
+                      disabled={testTriggering || running || saving}
+                      onClick={onTestTrigger}
+                      title={t('testTriggerHint')}
+                    >
+                      {testTriggering ? t('testTriggerRunning') : t('testTrigger')}
+                    </Button>
+                  </div>
+                  {!strategyBoundToActive && strategyPayload?.config.query_id != null ? (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
+                      {t('strategyQueryMismatch')}
+                    </p>
+                  ) : null}
+                  <label className="flex items-center gap-2 text-[12px] text-foreground/90 cursor-pointer w-fit">
+                    <input
+                      type="checkbox"
+                      className="rounded border-border"
+                      checked={autoMonitorEnabled}
+                      onChange={e => setAutoMonitorEnabled(e.target.checked)}
+                    />
+                    <span>{t('autoMonitorEnabled')}</span>
+                  </label>
+                  <div className="flex flex-col xl:flex-row xl:items-end gap-2 xl:gap-3">
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span className="font-medium text-foreground/80 shrink-0">{t('monitorWindow')}</span>
+                        <span className="hidden sm:inline truncate">{t('monitorTimeHint')}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Select
+                          value={matchingMonitorPreset(monitorStart, monitorEnd) ?? undefined}
+                          onValueChange={id => {
+                            const preset = MONITOR_WINDOW_PRESETS.find(p => p.id === id)
+                            if (preset) applyMonitorWindow(preset.start, preset.end)
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[10.25rem] shrink-0 px-2.5 text-[13px] [&>span]:line-clamp-none [&>span]:whitespace-nowrap">
+                            <SelectValue placeholder={t('monitorPresetPlaceholder')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MONITOR_WINDOW_PRESETS.map(p => (
+                              <SelectItem key={p.id} value={p.id}>
+                                {t(`monitorPreset.${p.id}`)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="time"
+                          step={60}
+                          aria-label={t('monitorStart')}
+                          className="h-8 w-[6.75rem] tabular-nums shrink-0 text-[13px]"
+                          value={monitorStart}
+                          onChange={e => applyMonitorWindow(e.target.value, monitorEnd)}
+                        />
+                        <span className="text-[12px] text-muted-foreground shrink-0">{t('monitorTimeTo')}</span>
+                        <Input
+                          type="time"
+                          step={60}
+                          aria-label={t('monitorEnd')}
+                          className="h-8 w-[6.75rem] tabular-nums shrink-0 text-[13px]"
+                          value={monitorEnd}
+                          onChange={e => applyMonitorWindow(monitorStart, e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-end gap-2 sm:gap-3 shrink-0">
+                      <div className="space-y-1 w-[4.5rem]">
+                        <Label className="text-[11px] text-muted-foreground font-normal leading-none">
+                          {t('gainThreshold')}
+                        </Label>
+                        <Select value={String(gainPct)} onValueChange={v => setGainPct(Number(v))}>
+                          <SelectTrigger className="h-8 text-[13px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {GAIN_PCT_OPTIONS.map(p => (
+                              <SelectItem key={p} value={String(p)}>
+                                {t('gainThresholdOption', { pct: p })}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1 min-w-[8.5rem] flex-1 sm:flex-none sm:w-[12rem]">
+                        <Label className="text-[11px] text-muted-foreground font-normal leading-none">
+                          {t('notifyChannel')}
+                        </Label>
+                        <Select
+                          value={notifyChannelId != null ? String(notifyChannelId) : undefined}
+                          onValueChange={v => setNotifyChannelId(Number(v))}
+                        >
+                          <SelectTrigger className="h-8 px-2.5 text-[13px] [&>span]:line-clamp-none [&>span]:whitespace-nowrap">
+                            <SelectValue placeholder={t('notifyChannelPlaceholder')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {notifyChannels.length === 0 ? (
+                              <SelectItem value="__none__" disabled>
+                                {t('notifyChannelEmpty')}
+                              </SelectItem>
+                            ) : (
+                              notifyChannels.map(ch => (
+                                <SelectItem key={ch.id} value={String(ch.id)} disabled={!ch.enabled}>
+                                  {ch.name}
+                                  {!ch.enabled ? ` (${t('notifyChannelDisabled')})` : ''}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                  {notifyChannels.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground leading-snug">{t('notifyChannelEmptyHint')}</p>
+                  ) : null}
+                  {(strategyPayload?.session || lastScanMessage) && (
+                    <div className="flex flex-col gap-1.5 pt-0.5 border-t border-border/40">
+                      {strategyPayload?.session ? (
+                        <p className="text-[11px] text-muted-foreground leading-snug flex flex-wrap gap-x-2 gap-y-0.5">
+                          <span>
+                            {t('poolStatus')} ·{' '}
+                            {t(
+                              `poolStatusLabels.${strategyPayload.session.pool_status}` as 'poolStatusLabels.ready',
+                              { defaultValue: strategyPayload.session.pool_status },
+                            )}
+                          </span>
+                          <span>{t('poolCount', { count: strategyPayload.session.pool_count })}</span>
+                          {strategyPayload.session.pool_built_at ? (
+                            <span>{t('poolBuiltAt', { time: strategyPayload.session.pool_built_at })}</span>
+                          ) : null}
+                          {strategyPayload.session.last_error ? (
+                            <span className="text-destructive">{strategyPayload.session.last_error}</span>
+                          ) : null}
+                        </p>
+                      ) : null}
+                      {lastScanMessage ? (
+                        <p className="text-[11px] leading-snug text-foreground/90">
+                          <span className="font-medium text-muted-foreground">{t('testTriggerSummary')} · </span>
+                          {lastScanMessage}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {screenEngine === 'em' && (
+                <div className="flex gap-1 border-b border-border/60">
+                  <button
+                    type="button"
+                    className={`px-3 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors ${
+                      resultTab === 'screener'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                    onClick={() => setResultTab('screener')}
+                  >
+                    {t('resultTabScreener')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-3 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors ${
+                      resultTab === 'triggers'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                    onClick={() => setResultTab('triggers')}
+                  >
+                    {t('resultTabTriggers')}
+                    {strategyPayload?.triggers?.length ? (
+                      <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary">
+                        {strategyPayload.triggers.length}
+                      </span>
+                    ) : null}
+                  </button>
+                </div>
+              )}
+
               <div className="text-[12px] text-muted-foreground rounded-lg border border-border/50 bg-accent/30 px-3 py-2">
                 {screenEngine === 'operators' ? `${t('engineOperators')} · ${operatorMenuCaption} · ` : ''}
-                {t(`status.${detail.status}` as 'status.draft')}
-                {detail.last_run_at ? ` · ${detail.last_run_at}` : ''}
-                {detail.data_source ? ` · ${detail.data_source}` : ''}
-                {detail.last_error ? ` · ${detail.last_error}` : ''}
+                {screenEngine === 'em' && resultTab === 'triggers' ? (
+                  <>
+                    {t('lastTestTriggerAt', {
+                      time:
+                        strategyPayload?.config.last_test_trigger_at ??
+                        strategyPayload?.scan?.finished_at ??
+                        '—',
+                    })}
+                  </>
+                ) : (
+                  <>
+                    {t(`status.${detail.status}` as 'status.draft')}
+                    {detail.last_run_at
+                      ? ` · ${t('lastQueryRunAt', { time: formatTriggerAtDisplay(detail.last_run_at) })}`
+                      : ''}
+                    {detail.data_source ? ` · ${detail.data_source}` : ''}
+                    {detail.last_error ? ` · ${detail.last_error}` : ''}
+                  </>
+                )}
               </div>
 
-              {(detail.rows?.length || 0) === 0 ? (
+              {screenEngine === 'em' && resultTab === 'triggers' ? (
+                (strategyPayload?.triggers?.length || 0) === 0 ? (
+                  <div className="text-center text-muted-foreground text-[13px] py-10">{t('noTriggers')}</div>
+                ) : (
+                  <div className="flex flex-col gap-3 min-w-0">
+                    <div className="flex flex-wrap gap-3 text-[12px] text-muted-foreground shrink-0">
+                      <span>{t('triggerTotalRows', { count: triggerRows.length })}</span>
+                      <span>{t('perPage', { size: PAGE_SIZE })}</span>
+                      <span>{t('pageOf', { page: triggerPage, pages: triggerPageCount })}</span>
+                    </div>
+                    <div className="overflow-x-auto rounded-xl border border-border/60 max-w-full">
+                      <table className="w-full text-[13px] min-w-[640px]">
+                        <thead>
+                          <tr className="bg-muted/50 text-muted-foreground text-[12px]">
+                            <th className="text-left p-2.5">{t('triggerColumns.code')}</th>
+                            <th className="text-left p-2.5">{t('triggerColumns.name')}</th>
+                            <th className="text-left p-2.5">{t('triggerColumns.triggerAt')}</th>
+                            <th className="text-left p-2.5">{t('triggerColumns.triggerPrice')}</th>
+                            <th className="text-left p-2.5">{t('triggerColumns.prevClose')}</th>
+                            <th className="text-left p-2.5">{t('triggerColumns.changePct')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pagedTriggers.map(tr => {
+                            const ch = tr.change_pct ?? 0
+                            return (
+                              <tr key={`${tr.symbol}-${tr.trigger_at}`} className="border-t border-border/50 hover:bg-accent/30">
+                                <td className="p-2.5 font-mono text-[12px]">{tr.symbol}</td>
+                                <td className="p-2.5">{tr.name || '—'}</td>
+                                <td className="p-2.5 tabular-nums">{formatTriggerAtDisplay(tr.trigger_at)}</td>
+                                <td className="p-2.5 tabular-nums">{tr.trigger_price.toFixed(2)}</td>
+                                <td className="p-2.5 tabular-nums">{tr.prev_close.toFixed(2)}</td>
+                                <td className={`p-2.5 tabular-nums font-semibold ${marketSignTextClass(ch)}`}>
+                                  {tr.change_pct != null ? `${tr.change_pct > 0 ? '+' : ''}${tr.change_pct.toFixed(2)}%` : '—'}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="flex shrink-0 items-center justify-between text-[13px] text-muted-foreground pt-1">
+                      <span>{t('pageOf', { page: triggerPage, pages: triggerPageCount })}</span>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={triggerPage <= 1}
+                          onClick={() => setTriggerPage(p => p - 1)}
+                        >
+                          上一页
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={triggerPage >= triggerPageCount}
+                          onClick={() => setTriggerPage(p => p + 1)}
+                        >
+                          下一页
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              ) : (detail.rows?.length || 0) === 0 ? (
                 <div className="text-center text-muted-foreground text-[13px] py-10">{t('noResult')}</div>
               ) : (
                 <div className="flex flex-col gap-3 min-w-0">
-                  <p className="text-[11px] text-muted-foreground leading-relaxed">{t('algorithmNote')}</p>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={computingScores || running || !cnQuery}
-                      onClick={onComputeAllScores}
-                    >
-                      {computingScores ? t('computingScores') : t('computeAll')}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={computingScores || running || !cnQuery || selectedCodes.length === 0}
-                      onClick={onBatchComputeScores}
-                    >
-                      {computingScores ? t('computingScores') : t('batchCompute', { count: selectedCodes.length })}
-                    </Button>
-                  </div>
                   <div className="flex flex-wrap gap-3 text-[12px] text-muted-foreground shrink-0">
                     <span>{t('totalRows', { count: displayRows.length })}</span>
                     <span>{t('perPage', { size: PAGE_SIZE })}</span>
                     <span>{t('pageOf', { page, pages: pageCount })}</span>
                     <span>{t('onlyThisQuery')}</span>
-                    {detail.intraday_scores?.sorted_by_score ? (
-                      <span className="text-primary">{t('scoreColumn')} ↓</span>
-                    ) : null}
                   </div>
                   <div className="overflow-x-auto rounded-xl border border-border/60 max-w-full">
                     <table className="w-full table-fixed text-[13px]">
                       <colgroup>
-                        <col className="w-[36px]" />
-                        <col className="w-[16%]" />
-                        <col className="w-[18%]" />
-                        <col className="w-[16%]" />
-                        <col className="w-[16%]" />
-                        <col className="w-[16%]" />
+                        <col className="w-[20%]" />
+                        <col className="w-[28%]" />
+                        <col className="w-[22%]" />
+                        <col className="w-[22%]" />
                       </colgroup>
                       <thead>
                         <tr className="bg-muted/50 text-muted-foreground text-[12px]">
-                          <th className="p-2.5 w-[36px]">
-                            <input
-                              type="checkbox"
-                              className="h-4 w-4 rounded border-border"
-                              checked={allPagedSelected}
-                              onChange={togglePageSelection}
-                              aria-label={t('batchCompute', { count: selectedCodes.length })}
-                            />
-                          </th>
                           <th className="text-left p-2.5">{t('resultColumns.code')}</th>
                           <th className="text-left p-2.5">{t('resultColumns.name')}</th>
                           <th className="text-left p-2.5">{t('resultColumns.price')}</th>
                           <th className="text-left p-2.5">{t('resultColumns.changePct')}</th>
-                          <th className="text-left p-2.5">{t('scoreColumn')}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {pagedRows.map((row, idx) => {
                           const codeRaw = pickRowField(row, ROW_FIELD_RULES.code)
-                          const codeKey = rowCodeKey(row)
                           const name = pickRowField(row, ROW_FIELD_RULES.name)
                           const price = pickRowField(row, ROW_FIELD_RULES.price)
                           const changePctRaw = pickRowField(row, ROW_FIELD_RULES.changePct)
                           const changeNum = parseChangePctNum(changePctRaw) ?? 0
                           const changePct = formatChangePctDisplay(changePctRaw)
-                          const { score, error } = lookupScore(codeKey)
                           return (
-                            <tr key={`${codeKey || idx}-${idx}`} className="border-t border-border/50 hover:bg-accent/30">
-                              <td className="p-2.5 w-[36px]">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 rounded border-border"
-                                  checked={codeKey ? selectedCodes.includes(codeKey) : false}
-                                  disabled={!codeKey}
-                                  onChange={() => toggleRowSelected(codeKey)}
-                                />
-                              </td>
+                            <tr key={`${codeRaw}-${idx}`} className="border-t border-border/50 hover:bg-accent/30">
                               <td className="p-2.5 font-mono text-[12px] truncate" title={codeRaw}>
                                 {codeRaw}
                               </td>
@@ -875,13 +1164,6 @@ export default function StockScreenerPage() {
                                 className={`p-2.5 tabular-nums truncate font-semibold ${marketSignTextClass(changeNum)}`}
                               >
                                 {changePct}
-                              </td>
-                              <td
-                                className="p-2.5 tabular-nums font-semibold truncate"
-                                title={error || undefined}
-                              >
-                                {formatIntradayScore(score)}
-                                {error ? <span className="ml-1 text-[10px] font-normal text-destructive">!</span> : null}
                               </td>
                             </tr>
                           )
