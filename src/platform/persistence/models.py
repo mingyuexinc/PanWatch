@@ -1127,17 +1127,57 @@ class PaperTradingTrade(Base):
     meta = Column(JSON, default={})
 
 
+class TradeJournalStrategy(Base):
+    """交易记录策略: 顶层分组,下挂多个版本。"""
+
+    __tablename__ = "trade_journal_strategies"
+    __table_args__ = (Index("ix_trade_journal_strategy_sort", "sort_order"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False, default="")
+    description = Column(Text, default="")
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TradeJournalVersion(Base):
+    """交易记录版本: 隶属于某一策略,其下归纳多条交易记录。"""
+
+    __tablename__ = "trade_journal_versions"
+    __table_args__ = (
+        Index("ix_trade_journal_version_strategy", "strategy_id"),
+        Index("ix_trade_journal_version_sort", "sort_order"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(
+        Integer, ForeignKey("trade_journal_strategies.id"), nullable=False
+    )
+    name = Column(String, nullable=False, default="")
+    description = Column(Text, default="")
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class TradeJournalEntry(Base):
     """自定义交易记录: 人工录入并复盘的每笔交易(短线打板日记)。
 
     记录列固定为 开仓日期/股票名称/板块身位/开盘涨幅/封板结果/卖出时机/
-    收益率/复盘备注,排序由 sort_order 决定,支持页内拖拽调整。
+    收益率/复盘备注,排序由 sort_order 决定,支持页内拖拽调整;
+    每条记录归属某一策略下的某一版本。
     """
 
     __tablename__ = "trade_journal_entries"
-    __table_args__ = (Index("ix_trade_journal_sort", "sort_order"),)
+    __table_args__ = (
+        Index("ix_trade_journal_entry_version_sort", "version_id", "sort_order"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    version_id = Column(
+        Integer, ForeignKey("trade_journal_versions.id"), nullable=False
+    )
     trade_date = Column(String, nullable=False)  # 开仓日期 "YYYY-MM-DD"
     stock_name = Column(String, nullable=False, default="")  # 股票名称
     sector = Column(String, default="")  # 板块/身位

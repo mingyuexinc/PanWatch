@@ -85,6 +85,7 @@ def _init_db_once() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate(engine)
     _rename_trade_journal_open_price(engine)
+    _migrate_trade_journal_hierarchy(engine)
     _migrate_old_providers(engine)
     _migrate_settings_to_models(engine)
     _migrate_positions_to_accounts(engine)
@@ -345,6 +346,75 @@ def _rename_trade_journal_open_price(engine):
         )
         conn.commit()
         logger.info("已将 trade_journal_entries.open_price 重命名为 open_change_pct")
+
+
+def _migrate_trade_journal_hierarchy(engine):
+    """交易记录: 为存量数据补齐 策略→版本→记录 层级。"""
+    with engine.connect() as conn:
+        if not _has_table(conn, "trade_journal_entries"):
+            return
+        if not _has_column(conn, "trade_journal_entries", "version_id"):
+            conn.execute(
+                text("ALTER TABLE trade_journal_entries ADD COLUMN version_id INTEGER")
+            )
+            conn.commit()
+        if not _has_table(conn, "trade_journal_strategies"):
+            return
+        strategy_row = conn.execute(
+            text(
+                "SELECT id FROM trade_journal_strategies "
+                "ORDER BY sort_order ASC, id ASC LIMIT 1"
+            )
+        ).fetchone()
+        if strategy_row is None:
+            conn.execute(
+                text(
+                    "INSERT INTO trade_journal_strategies (name, description, sort_order) "
+                    "VALUES ('默认策略', '', 1)"
+                )
+            )
+            conn.commit()
+            strategy_row = conn.execute(
+                text("SELECT id FROM trade_journal_strategies ORDER BY id ASC LIMIT 1")
+            ).fetchone()
+        strategy_id = strategy_row[0]
+        version_row = conn.execute(
+            text(
+                "SELECT id FROM trade_journal_versions "
+                "WHERE strategy_id = :sid ORDER BY sort_order ASC, id ASC LIMIT 1"
+            ),
+            {"sid": strategy_id},
+        ).fetchone()
+        if version_row is None:
+            conn.execute(
+                text(
+                    "INSERT INTO trade_journal_versions "
+                    "(strategy_id, name, description, sort_order) "
+                    "VALUES (:sid, '默认版本', '', 1)"
+                ),
+                {"sid": strategy_id},
+            )
+            conn.commit()
+            version_row = conn.execute(
+                text(
+                    "SELECT id FROM trade_journal_versions "
+                    "WHERE strategy_id = :sid ORDER BY id ASC LIMIT 1"
+                ),
+                {"sid": strategy_id},
+            ).fetchone()
+        version_id = version_row[0]
+        conn.execute(
+            text(
+                "UPDATE trade_journal_entries SET version_id = :vid "
+                "WHERE version_id IS NULL"
+            ),
+            {"vid": version_id},
+        )
+        conn.commit()
+        logger.info(
+            "已迁移 trade_journal_entries 至默认策略/版本 (version_id=%s)",
+            version_id,
+        )
 
 
 def _migrate_old_providers(engine):
