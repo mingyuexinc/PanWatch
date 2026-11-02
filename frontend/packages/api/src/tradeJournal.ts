@@ -1,8 +1,28 @@
 import { fetchAPI } from './client'
 
+export interface TradeJournalStrategy {
+  id: number
+  name: string
+  description: string
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface TradeJournalVersion {
+  id: number
+  strategy_id: number
+  name: string
+  description: string
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+}
+
 /** 自定义交易记录(复盘日记)条目 */
 export interface TradeJournalEntry {
   id: number
+  version_id: number
   /** 开仓日期 "YYYY-MM-DD" */
   trade_date: string
   stock_name: string
@@ -28,16 +48,16 @@ export interface TradeJournalList {
   page: number
   page_size: number
   pages: number
+  version_id: number
 }
 
-/** 一键统计结果(范围为全部记录;收益率未填的记录不参与计算) */
+/** 一键统计结果(范围为指定版本;收益率未填的记录不参与计算) */
 export interface TradeJournalStats {
+  version_id: number
   total: number
   counted: number
   win_count: number
-  /** 盈利概率 = 盈利次数/有效次数,0~1;无有效记录时为 null */
   win_rate: number | null
-  /** 总收益率 = ∏(1+r/100)-1,以百分比表达;无有效记录时为 null */
   total_return_pct: number | null
 }
 
@@ -46,9 +66,52 @@ export type TradeJournalPayload = Omit<
   'id' | 'sort_order' | 'created_at' | 'updated_at'
 >
 
+export type TradeJournalStrategyPayload = Pick<TradeJournalStrategy, 'name' | 'description'>
+export type TradeJournalVersionPayload = Pick<TradeJournalVersion, 'name' | 'description'>
+
 export const tradeJournalApi = {
-  list: (page: number, pageSize = 20) =>
-    fetchAPI<TradeJournalList>(`/trade-journal?page=${page}&page_size=${pageSize}`),
+  listStrategies: () =>
+    fetchAPI<{ items: TradeJournalStrategy[] }>('/trade-journal/strategies'),
+  createStrategy: (payload: TradeJournalStrategyPayload) =>
+    fetchAPI<TradeJournalStrategy>('/trade-journal/strategies', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateStrategy: (id: number, payload: Partial<TradeJournalStrategyPayload>) =>
+    fetchAPI<TradeJournalStrategy>(`/trade-journal/strategies/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  removeStrategy: (id: number) =>
+    fetchAPI<{ removed: number }>(`/trade-journal/strategies/${id}`, { method: 'DELETE' }),
+
+  listVersions: (strategyId: number) =>
+    fetchAPI<{ items: TradeJournalVersion[] }>(
+      `/trade-journal/strategies/${strategyId}/versions`,
+    ),
+  createVersion: (strategyId: number, payload: TradeJournalVersionPayload) =>
+    fetchAPI<TradeJournalVersion>(`/trade-journal/strategies/${strategyId}/versions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateVersion: (id: number, payload: Partial<TradeJournalVersionPayload>) =>
+    fetchAPI<TradeJournalVersion>(`/trade-journal/versions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  removeVersion: (id: number) =>
+    fetchAPI<{ removed: number }>(`/trade-journal/versions/${id}`, { method: 'DELETE' }),
+
+  moveToVersion: (ids: number[], targetVersionId: number) =>
+    fetchAPI<{ moved: number }>('/trade-journal/entries/move-to-version', {
+      method: 'POST',
+      body: JSON.stringify({ ids, target_version_id: targetVersionId }),
+    }),
+
+  list: (versionId: number, page: number, pageSize = 20) =>
+    fetchAPI<TradeJournalList>(
+      `/trade-journal?version_id=${versionId}&page=${page}&page_size=${pageSize}`,
+    ),
   create: (payload: TradeJournalPayload) =>
     fetchAPI<TradeJournalEntry>('/trade-journal', {
       method: 'POST',
@@ -66,13 +129,14 @@ export const tradeJournalApi = {
       method: 'POST',
       body: JSON.stringify({ ids }),
     }),
-  /** 拖拽排序:提交当前页全部条目按新顺序排列的 id 列表 */
-  reorder: (orderedIds: number[]) =>
+  reorder: (versionId: number, orderedIds: number[]) =>
     fetchAPI<{ ok: boolean }>('/trade-journal/reorder/batch', {
       method: 'PUT',
       body: JSON.stringify({
+        version_id: versionId,
         items: orderedIds.map((id, idx) => ({ id, sort_order: idx + 1 })),
       }),
     }),
-  stats: () => fetchAPI<TradeJournalStats>('/trade-journal/stats'),
+  stats: (versionId: number) =>
+    fetchAPI<TradeJournalStats>(`/trade-journal/stats?version_id=${versionId}`),
 }
