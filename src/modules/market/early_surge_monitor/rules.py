@@ -54,13 +54,15 @@ def evaluate_quote_cross(
     quote_ts: datetime,
     cfg: MonitorConfig,
     already_triggered: bool,
+    window_ts: datetime | None = None,
 ) -> TriggerDecision:
     """最新价 crossing：与软件「涨幅 vs 昨收」同源。"""
     if already_triggered:
         return TriggerDecision(False, False, "already_triggered")
     if prev_close is None or prev_close <= 0:
         return TriggerDecision(False, False, "missing_prev_close")
-    if not in_monitor_window(quote_ts, cfg):
+    wt = window_ts or quote_ts
+    if not in_monitor_window(wt, cfg):
         return TriggerDecision(False, False, "outside_window")
 
     threshold = prev_close * cfg.trigger_ratio
@@ -69,7 +71,7 @@ def evaluate_quote_cross(
 
     near = is_near_threshold(price, prev_close, cfg)
     need_confirm = cfg.mkline_confirm and near
-    trig_at = software_trigger_clock(quote_ts)
+    trig_at = software_trigger_clock(wt)
     from datetime import timedelta
 
     notify_at = trig_at + timedelta(seconds=cfg.notify_delay_s)

@@ -15,7 +15,11 @@ from src.modules.market import nl_screener_service as screener_svc
 from src.modules.market.early_surge_monitor.config import MonitorConfig
 from src.modules.market.early_surge_monitor.engine import EarlySurgeMonitorEngine
 from src.modules.market.early_surge_monitor.prev_close import prev_trading_close
-from src.modules.market.early_surge_monitor.quotes import fetch_quote_snapshots, fetch_quote_ticks
+from src.modules.market.early_surge_monitor.quotes import (
+    fetch_quote_snapshots,
+    open_auction_effective_price,
+)
+from src.modules.market.early_surge_monitor.scan_stats import AuctionScanStats
 from src.modules.market.early_surge_monitor.replay import scan_pool_from_mkline
 from src.modules.market.early_surge_monitor.rules import TriggerDecision, in_monitor_window
 from src.modules.market.screener_datetime import format_beijing_display, now_cn_naive
@@ -38,6 +42,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_START = 9 * 60 + 30
 DEFAULT_END = 9 * 60 + 40
 DEFAULT_GAIN = 3
+_last_live_summary_minute: int | None = None
 
 
 def _cn_today() -> str:
@@ -228,7 +233,7 @@ def _extract_pool_codes(rows: list[dict]) -> list[str]:
 
 def _build_prev_close_map(codes: list[str], trade_date: str) -> dict[str, float]:
     snaps = fetch_quote_snapshots(codes)
-    by_sym = {s: (p, pc) for s, p, pc, _ts in snaps}
+    by_sym = {s: (p, pc) for s, p, pc, _ts, _op in snaps}
     out: dict[str, float] = {}
     for code in codes:
         _price, pc = by_sym.get(code, (0.0, None))
@@ -390,21 +395,54 @@ def _scan_pool_open_auction(
     cfg: NlScreenerStrategyConfig,
     prev_close_by_symbol: dict[str, float],
     triggered_symbols: set[str],
-) -> list[tuple[str, TriggerDecision]]:
+) -> tuple[list[tuple[str, TriggerDecision]], AuctionScanStats]:
     mon_cfg = _monitor_config_for(cfg, mkline_confirm=False)
     prev_map = {normalize_cn_symbol(k): float(v) for k, v in prev_close_by_symbol.items()}
+    norm_codes = [normalize_cn_symbol(c) for c in codes if normalize_cn_symbol(c)]
+    stats = AuctionScanStats(pool_size=len(norm_codes))
     trig_at = _auction_trigger_clock(trade_date)
     fired: list[tuple[str, TriggerDecision]] = []
-    rows = fetch_quote_ticks(codes, batch_size=mon_cfg.batch_size, timeout=mon_cfg.quote_timeout_s)
-    for sym, price, qts in rows:
+    threshold_ratio = mon_cfg.trigger_ratio
+    rows = fetch_quote_snapshots(
+        norm_codes,
+        batch_size=mon_cfg.batch_size,
+        timeout=mon_cfg.quote_timeout_s,
+    )
+    stats.quotes_received = len(rows)
+    seen: set[str] = set()
+    for sym, last_price, _pc_snap, qts, open_price in rows:
         code = normalize_cn_symbol(sym)
-        if not code or code in triggered_symbols:
+        if not code:
+            continue
+        seen.add(code)
+        if code in triggered_symbols:
             continue
         pc = prev_map.get(code)
         if pc is None or pc <= 0:
+            stats.missing_prev_close += 1
             continue
-        if price < pc * mon_cfg.trigger_ratio:
+        effective = open_auction_effective_price(last_price, open_price)
+        threshold = pc * threshold_ratio
+        if effective < threshold:
+            stats.below_threshold += 1
+            if len(stats.sample_below) < 5:
+                stats.sample_below.append(f"{code}@{effective:.2f}<{threshold:.2f}")
+            if (
+                open_price
+                and open_price > 0
+                and last_price < threshold <= open_price
+            ):
+                logger.info(
+                    "early_surge auction last below open above threshold %s last=%s open=%s thr=%s",
+                    code,
+                    last_price,
+                    open_price,
+                    threshold,
+                )
             continue
+        trigger_price = effective
+        if open_price and open_price > 0 and last_price < threshold <= open_price:
+            stats.fired_via_open += 1
         fired.append(
             (
                 code,
@@ -413,14 +451,28 @@ def _scan_pool_open_auction(
                     False,
                     "open_auction",
                     prev_close=pc,
-                    trigger_price=price,
+                    trigger_price=trigger_price,
                     quote_ts=(qts or trig_at).astimezone(CN_TZ),
                     trigger_at=trig_at,
                 ),
             )
         )
         triggered_symbols.add(code)
-    return fired
+        stats.fired += 1
+    stats.missing_quotes = sum(1 for c in norm_codes if c not in seen)
+    if stats.missing_quotes:
+        for c in norm_codes:
+            if c not in seen and len(stats.sample_missing_quote) < 5:
+                stats.sample_missing_quote.append(c)
+        logger.warning(
+            "early_surge auction missing quotes pool=%s got=%s missing=%s sample=%s",
+            stats.pool_size,
+            stats.quotes_received,
+            stats.missing_quotes,
+            ",".join(stats.sample_missing_quote),
+        )
+    logger.info("early_surge auction scan %s", stats.to_log_dict())
+    return fired, stats
 
 
 def _persist_triggers_and_push(
@@ -519,7 +571,7 @@ def _run_open_auction_scan(
     if not codes:
         return {"mode": "open_auction", "new_triggers": 0, "message": "股票池为空"}
     existing = _existing_trigger_symbols(db, scan_date)
-    fired = _scan_pool_open_auction(
+    fired, auction_stats = _scan_pool_open_auction(
         codes,
         scan_date,
         cfg=cfg,
@@ -549,7 +601,22 @@ def _run_open_auction_scan(
         "pool_count": len(codes),
         "message": msg,
         "push": push_result,
+        "scan_stats": auction_stats.to_log_dict(),
     }
+
+
+def _log_live_poll_summary(now: datetime, stats: dict[str, int], new_count: int) -> None:
+    global _last_live_summary_minute
+    minute = now.hour * 60 + now.minute
+    stale = int(stats.get("stale_quote_ts") or 0)
+    missing = int(stats.get("missing_quote") or 0)
+    if new_count > 0 or stale > 0 or missing > 0:
+        logger.info("[选股监控] live 扫描 %s new=%s", stats, new_count)
+        return
+    if _last_live_summary_minute == minute:
+        return
+    _last_live_summary_minute = minute
+    logger.info("[选股监控] live 心跳 minute=%02d:%02d stats=%s", now.hour, now.minute, stats)
 
 
 def run_live_monitor_poll(db: Session) -> dict[str, Any] | None:
@@ -578,7 +645,8 @@ def run_live_monitor_poll(db: Session) -> dict[str, Any] | None:
     existing = _existing_trigger_symbols(db, trade_date)
     engine = EarlySurgeMonitorEngine(mon_cfg)
     engine.load_session(prev_close_by_symbol=prev_map, triggered_symbols=existing)
-    fired = engine.poll_pool(codes, trade_date, now=now)
+    fired, poll_stats = engine.poll_pool(codes, trade_date, now=now)
+    stats_dict = poll_stats.to_log_dict()
     new_count, _rows, push_result = _persist_triggers_and_push(
         db,
         cfg,
@@ -589,12 +657,14 @@ def run_live_monitor_poll(db: Session) -> dict[str, Any] | None:
         existing=existing,
         mon_cfg=mon_cfg,
     )
+    _log_live_poll_summary(now, stats_dict, new_count)
     return {
         "mode": "live",
         "trade_date": trade_date,
         "new_triggers": new_count,
         "pool_count": len(codes),
         "push": push_result,
+        "scan_stats": stats_dict,
     }
 
 

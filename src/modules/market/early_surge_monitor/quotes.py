@@ -36,8 +36,10 @@ def _to_tencent(code: str) -> str:
     return Symbol(Market.CN, _norm_code(code)).to_tencent()
 
 
-def parse_tencent_quote_line(line: str) -> tuple[str, float, float | None, datetime | None] | None:
-    if '=""' not in line or not line.strip():
+def parse_tencent_quote_line(
+    line: str,
+) -> tuple[str, float, float | None, datetime | None, float | None] | None:
+    if '=""' in line or not line.strip():
         return None
     try:
         _, value = line.split('="', 1)
@@ -50,10 +52,20 @@ def parse_tencent_quote_line(line: str) -> tuple[str, float, float | None, datet
         price = float(parts[3] or 0)
         prev_raw = (parts[4] or "").strip()
         prev_close = float(prev_raw) if prev_raw else None
+        open_raw = (parts[5] or "").strip()
+        open_price = float(open_raw) if open_raw else None
         qts = _parse_quote_ts(parts[30])
-        return sym, price, prev_close, qts
+        return sym, price, prev_close, qts, open_price
     except (ValueError, IndexError):
         return None
+
+
+def open_auction_effective_price(last_price: float, open_price: float | None) -> float:
+    """竞价扫：现价(parts[3]) 在 9:25 附近常仍为昨收，需纳入开盘价(parts[5])。"""
+    lp = float(last_price or 0)
+    if open_price is not None and open_price > 0:
+        return max(lp, float(open_price))
+    return lp
 
 
 def fetch_quote_ticks(
@@ -64,7 +76,12 @@ def fetch_quote_ticks(
     retries: int = 0,
 ) -> list[tuple[str, float, datetime | None]]:
     """批量拉腾讯 L1；返回 (symbol6, price, quote_ts)。"""
-    return [(s, p, ts) for s, p, _pc, ts in fetch_quote_snapshots(symbols, batch_size=batch_size, timeout=timeout, retries=retries)]
+    return [
+        (s, p, ts)
+        for s, p, _pc, ts, _op in fetch_quote_snapshots(
+            symbols, batch_size=batch_size, timeout=timeout, retries=retries
+        )
+    ]
 
 
 def fetch_quote_snapshots(
@@ -73,12 +90,12 @@ def fetch_quote_snapshots(
     batch_size: int = 60,
     timeout: float = 4.0,
     retries: int = 0,
-) -> list[tuple[str, float, float | None, datetime | None]]:
-    """批量拉腾讯 L1；返回 (symbol6, price, prev_close, quote_ts)。"""
+) -> list[tuple[str, float, float | None, datetime | None, float | None]]:
+    """批量拉腾讯 L1；返回 (symbol6, price, prev_close, quote_ts, open_price)。"""
     codes = [_norm_code(s) for s in symbols if _norm_code(s)]
     if not codes:
         return []
-    out: list[tuple[str, float, float | None, datetime | None]] = []
+    out: list[tuple[str, float, float | None, datetime | None, float | None]] = []
     for i in range(0, len(codes), batch_size):
         chunk = codes[i : i + batch_size]
         tsyms = ",".join(_to_tencent(c) for c in chunk)
@@ -98,6 +115,6 @@ def fetch_quote_snapshots(
             parsed = parse_tencent_quote_line(line)
             if not parsed:
                 continue
-            sym, price, prev_close, qts = parsed
-            out.append((_norm_code(sym), price, prev_close, qts))
+            sym, price, prev_close, qts, open_price = parsed
+            out.append((_norm_code(sym), price, prev_close, qts, open_price))
     return out

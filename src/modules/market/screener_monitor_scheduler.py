@@ -44,10 +44,11 @@ class ScreenerMonitorScheduler:
             elif result.get("ok"):
                 auc = result.get("auction") or {}
                 logger.info(
-                    "[选股监控] 09:25 完成 pool=%s auction_new=%s push_sent=%s",
+                    "[选股监控] 09:25 完成 pool=%s auction_new=%s push_sent=%s scan=%s",
                     result.get("pool_count"),
                     auc.get("new_triggers"),
                     (auc.get("push") or {}).get("sent"),
+                    auc.get("scan_stats"),
                 )
             else:
                 logger.warning("[选股监控] 09:25 失败: %s", result)
@@ -68,13 +69,15 @@ class ScreenerMonitorScheduler:
             if not result:
                 return
             if result.get("skipped"):
+                logger.debug("[选股监控] live 跳过: %s", result.get("skipped"))
                 return
             n = result.get("new_triggers", 0)
             if n:
                 logger.info(
-                    "[选股监控] live 新增触发 %s push_sent=%s",
+                    "[选股监控] live 新增触发 %s push_sent=%s scan=%s",
                     n,
                     (result.get("push") or {}).get("sent"),
+                    result.get("scan_stats"),
                 )
         except Exception:
             logger.exception("[选股监控] live 轮询异常")

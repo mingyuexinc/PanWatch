@@ -76,8 +76,8 @@ def test_open_auction_scan_fires():
         db.commit()
 
         with patch(
-            "src.modules.market.screener_monitor_service.fetch_quote_ticks",
-            return_value=[("600000", 10.5, datetime(2026, 11, 3, 9, 25, tzinfo=CN))],
+            "src.modules.market.screener_monitor_service.fetch_quote_snapshots",
+            return_value=[("600000", 10.5, 10.0, datetime(2026, 11, 3, 9, 25, tzinfo=CN), None)],
         ):
             with patch.object(svc, "_names_from_query", return_value={"600000": "浦发银行"}):
                 with patch(
