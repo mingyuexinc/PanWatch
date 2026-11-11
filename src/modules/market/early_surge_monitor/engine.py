@@ -165,6 +165,7 @@ class EarlySurgeMonitorEngine:
             batch_size=self.cfg.batch_size,
             timeout=self.cfg.quote_timeout_s,
             retries=self.cfg.quote_retries,
+            max_parallel_batches=self.cfg.max_parallel_batches,
         )
         stats.quotes_received = len(rows)
         seen = {normalize_cn_symbol(s) for s, _, _ in rows}

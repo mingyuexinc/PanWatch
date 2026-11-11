@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -74,14 +75,50 @@ def fetch_quote_ticks(
     batch_size: int = 60,
     timeout: float = 4.0,
     retries: int = 0,
+    max_parallel_batches: int = 1,
 ) -> list[tuple[str, float, datetime | None]]:
     """批量拉腾讯 L1；返回 (symbol6, price, quote_ts)。"""
     return [
         (s, p, ts)
         for s, p, _pc, ts, _op in fetch_quote_snapshots(
-            symbols, batch_size=batch_size, timeout=timeout, retries=retries
+            symbols,
+            batch_size=batch_size,
+            timeout=timeout,
+            retries=retries,
+            max_parallel_batches=max_parallel_batches,
         )
     ]
+
+
+def _fetch_quote_chunk(
+    chunk: list[str],
+    *,
+    timeout: float,
+    retries: int,
+) -> list[tuple[str, float, float | None, datetime | None, float | None]]:
+    if not chunk:
+        return []
+    tsyms = ",".join(_to_tencent(c) for c in chunk)
+    content = market_get(
+        _TENCENT_Q_URL + tsyms,
+        host_key=_TENCENT_Q_HOST,
+        min_interval_s=0.15,
+        timeout=timeout,
+        retries=retries,
+        parse="content",
+        log_label="early_surge quote",
+    )
+    if not content:
+        return []
+    text = content.decode("gbk", errors="ignore") if isinstance(content, (bytes, bytearray)) else str(content)
+    rows: list[tuple[str, float, float | None, datetime | None, float | None]] = []
+    for line in text.strip().split(";"):
+        parsed = parse_tencent_quote_line(line)
+        if not parsed:
+            continue
+        sym, price, prev_close, qts, open_price = parsed
+        rows.append((_norm_code(sym), price, prev_close, qts, open_price))
+    return rows
 
 
 def fetch_quote_snapshots(
@@ -90,31 +127,28 @@ def fetch_quote_snapshots(
     batch_size: int = 60,
     timeout: float = 4.0,
     retries: int = 0,
+    max_parallel_batches: int = 1,
 ) -> list[tuple[str, float, float | None, datetime | None, float | None]]:
-    """批量拉腾讯 L1；返回 (symbol6, price, prev_close, quote_ts, open_price)。"""
+    """批量拉腾讯 L1；返回 (symbol6, price, prev_close, quote_ts, open_price)。
+
+    max_parallel_batches>1 时多 chunk 并行 HTTP（仍受 marketdata.http 按 host 节流）。
+    默认 1 保持与原串行语义一致。
+    """
     codes = [_norm_code(s) for s in symbols if _norm_code(s)]
     if not codes:
         return []
+    chunks = [codes[i : i + batch_size] for i in range(0, len(codes), batch_size)]
+    workers = max(1, min(int(max_parallel_batches), len(chunks)))
+    if workers <= 1:
+        out: list[tuple[str, float, float | None, datetime | None, float | None]] = []
+        for chunk in chunks:
+            out.extend(_fetch_quote_chunk(chunk, timeout=timeout, retries=retries))
+        return out
     out: list[tuple[str, float, float | None, datetime | None, float | None]] = []
-    for i in range(0, len(codes), batch_size):
-        chunk = codes[i : i + batch_size]
-        tsyms = ",".join(_to_tencent(c) for c in chunk)
-        content = market_get(
-            _TENCENT_Q_URL + tsyms,
-            host_key=_TENCENT_Q_HOST,
-            min_interval_s=0.15,
-            timeout=timeout,
-            retries=retries,
-            parse="content",
-            log_label="early_surge quote",
-        )
-        if not content:
-            continue
-        text = content.decode("gbk", errors="ignore") if isinstance(content, (bytes, bytearray)) else str(content)
-        for line in text.strip().split(";"):
-            parsed = parse_tencent_quote_line(line)
-            if not parsed:
-                continue
-            sym, price, prev_close, qts, open_price = parsed
-            out.append((_norm_code(sym), price, prev_close, qts, open_price))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_fetch_quote_chunk, chunk, timeout=timeout, retries=retries) for chunk in chunks
+        ]
+        for fut in as_completed(futures):
+            out.extend(fut.result())
     return out

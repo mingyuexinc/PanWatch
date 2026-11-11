@@ -15,6 +15,7 @@ class MonitorConfig:
     quote_timeout_s: float = 4.0
     quote_retries: int = 0
     batch_size: int = 60
+    max_parallel_batches: int = 2
     near_threshold_bps: float = 15.0
     mkline_confirm: bool = True
     # 推送在触发时刻之后的最小延迟（秒），模拟企微发送
