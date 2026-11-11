@@ -620,7 +620,7 @@ def _log_live_poll_summary(now: datetime, stats: dict[str, int], new_count: int)
 
 
 def run_live_monitor_poll(db: Session) -> dict[str, Any] | None:
-    """监控窗口内 L1 轮询（仅未触发票）。"""
+    """监控窗口内 L1 轮询（仅未触发票）；live 不以 1m K 复核，以批量 L1 crossing 为准。"""
     cfg = _get_or_create_config(db)
     skip = _auto_skip_reason(cfg)
     if skip:
@@ -629,7 +629,7 @@ def run_live_monitor_poll(db: Session) -> dict[str, Any] | None:
     trade_date = now.date().isoformat()
     if trade_date != _market_trade_date_on_or_before(now.date()):
         return {"skipped": "not_trading_day"}
-    mon_cfg = _monitor_config_for(cfg, mkline_confirm=True)
+    mon_cfg = _monitor_config_for(cfg, mkline_confirm=False)
     if not in_monitor_window(now, mon_cfg):
         return {"skipped": "outside_monitor_window"}
 

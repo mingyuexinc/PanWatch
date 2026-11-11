@@ -1,4 +1,4 @@
-"""选股监控：09:25:05 问句建池+竞价扫；监控窗口内 live 轮询。"""
+"""选股监控：09:25:05 问句建池+竞价扫；监控窗口内 live L1 轮询（无 mkline 复核）。"""
 
 from __future__ import annotations
 
