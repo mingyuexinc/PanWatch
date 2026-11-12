@@ -27,13 +27,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.platform.persistence.models import (
-    MaHoldDailyState,
     MonitorUniverseItem,
     PriceAlertHit,
     PriceAlertRule,
     Stock,
 )
-from src.modules.market.ma_hold.intraday_fetch import cn_trade_date
 
 MONITOR_MA_PERIODS = (5, 10, 20)
 DEFAULT_MONITOR_SIGNAL = "above_5"
@@ -281,13 +279,6 @@ def list_universe(db: Session) -> dict[str, Any]:
             latest_hit_by_rule.setdefault(hit.rule_id, hit)
     rows: list[dict[str, Any]] = []
     saved_at: datetime | None = None
-    hold_today = cn_trade_date()
-    hold_rows = {
-        r.stock_id: r
-        for r in db.query(MaHoldDailyState)
-        .filter(MaHoldDailyState.trade_date == hold_today)
-        .all()
-    }
     for item in items:
         stock = item.stock
         signal = normalize_monitor_signal(item.monitor_signal)
@@ -303,7 +294,6 @@ def list_universe(db: Session) -> dict[str, Any]:
             if is_price_monitor_signal(signal)
             else None
         )
-        hold_st = hold_rows.get(item.stock_id) if is_hold_monitor_signal(signal) else None
         rows.append(
             {
                 "id": item.id,
@@ -334,21 +324,11 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "rule_last_hit_notify_error": (
                     last_hit.notify_error or "" if last_hit else ""
                 ),
-                "hold_last_trigger_at": _naive_utc(hold_st.last_trigger_at).isoformat()
-                if hold_st and hold_st.last_trigger_at
-                else None,
-                "hold_last_trigger_price": hold_st.last_trigger_price
-                if hold_st
-                else None,
-                "hold_last_hit_notify_success": (
-                    bool(hold_st.notify_success)
-                    if hold_st and hold_st.notify_success is not None
-                    else None
-                ),
-                "hold_last_hit_notify_error": (
-                    (hold_st.notify_error or "") if hold_st else ""
-                ),
-                "hold_phase": hold_st.phase if hold_st else None,
+                "hold_last_trigger_at": None,
+                "hold_last_trigger_price": None,
+                "hold_last_hit_notify_success": None,
+                "hold_last_hit_notify_error": "",
+                "hold_phase": None,
             }
         )
         item_updated = _naive_utc(item.updated_at) or _naive_utc(item.created_at)
@@ -425,13 +405,6 @@ def update_item_signal(
         if not is_price_monitor_signal(signal):
             item.price_threshold = None
         db.commit()
-        if is_hold_monitor_signal(signal) or is_hold_monitor_signal(prev):
-            td = cn_trade_date()
-            db.query(MaHoldDailyState).filter(
-                MaHoldDailyState.stock_id == item.stock_id,
-                MaHoldDailyState.trade_date == td,
-            ).delete(synchronize_session=False)
-            db.commit()
     sync_monitor_rules(db)
     return item
 
