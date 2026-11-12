@@ -1,27 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Trash2, Radar } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { monitorUniverseApi, type MonitorSignal, type MonitorUniverseItem, type StockSearchResult } from '@panwatch/api'
+import { monitorUniverseApi, type MonitorUniverseItem, type StockSearchResult } from '@panwatch/api'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Input } from '@panwatch/base-ui/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from '@panwatch/base-ui/components/ui/select'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 
 const SEARCH_DEBOUNCE_MS = 400
+const PRICE_SIGNAL = 'price_above'
 
-// 后端信号目录未加载完成前的兜底(顺序:上穿5/10/20 → 下穿5/10/20)。
-const FALLBACK_SIGNALS: MonitorSignal[] = [
-  'above_5', 'above_10', 'above_20', 'below_5', 'below_10', 'below_20',
-]
-
-// 后端时间为 naive UTC(isoformat 不带时区后缀)。直接 new Date() 会被浏览器
-// 按本地时区解释,A股盘中(UTC 00:00-15:59)触发的时间会被判成前一天。
-// 解析前统一补 Z;已带时区后缀(Z 或 ±hh:mm)的串保持原样。
 function parseServerDate(iso: string): Date {
   const value = iso.includes('T') ? iso : iso.replace(' ', 'T')
   return new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
@@ -45,16 +32,20 @@ function formatDate(iso: string | null): string {
   }
 }
 
-function isTodayUtc(iso: string | null): boolean {
-  if (!iso) return false
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+/** 未触发为 " - "; 已触发为 2026/12/12（10：02：23）(本地时区,秒级) */
+function formatTriggerAt(iso: string | null | undefined): string {
+  if (!iso) return ' - '
   try {
     const d = parseServerDate(iso)
-    const now = new Date()
-    return d.getUTCFullYear() === now.getUTCFullYear()
-      && d.getUTCMonth() === now.getUTCMonth()
-      && d.getUTCDate() === now.getUTCDate()
+    const date = `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
+    const time = `${pad2(d.getHours())}：${pad2(d.getMinutes())}：${pad2(d.getSeconds())}`
+    return `${date}（${time}）`
   } catch {
-    return false
+    return ' - '
   }
 }
 
@@ -70,16 +61,15 @@ export default function MonitorUniversePage() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState<MonitorUniverseItem[]>([])
   const [savedAt, setSavedAt] = useState<string | null>(null)
-  const [signals, setSignals] = useState<MonitorSignal[]>(FALLBACK_SIGNALS)
   const [mutating, setMutating] = useState(false)
   const [selected, setSelected] = useState<number[]>([])
-
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
   const searchTimer = useRef<ReturnType<typeof setTimeout>>()
   const searchBoxRef = useRef<HTMLDivElement>(null)
+  const migratedRef = useRef(false)
 
   const symbolsInUniverse = useMemo(
     () => new Set(items.map(i => `${i.market}:${i.symbol}`)),
@@ -89,18 +79,38 @@ export default function MonitorUniversePage() {
   const applyList = (payload: {
     items: MonitorUniverseItem[]
     saved_at: string | null
-    signals?: MonitorSignal[]
   }) => {
     setItems(payload.items || [])
     setSavedAt(payload.saved_at)
-    if (payload.signals?.length) setSignals(payload.signals)
     setSelected(prev => prev.filter(id => (payload.items || []).some(i => i.id === id)))
+  }
+
+  const migrateLegacySignals = async (rows: MonitorUniverseItem[]) => {
+    const legacy = rows.filter(i => i.monitor_signal !== PRICE_SIGNAL)
+    if (legacy.length === 0) return rows
+    let latest = rows
+    for (const item of legacy) {
+      try {
+        const payload = await monitorUniverseApi.ensurePriceSignal(item.id)
+        latest = payload.items
+        setSavedAt(payload.saved_at)
+      } catch {
+        break
+      }
+    }
+    return latest
   }
 
   const load = async () => {
     setLoading(true)
     try {
-      applyList(await monitorUniverseApi.list())
+      const payload = await monitorUniverseApi.list()
+      let rows = payload.items || []
+      if (!migratedRef.current) {
+        migratedRef.current = true
+        rows = await migrateLegacySignals(rows)
+      }
+      applyList({ items: rows, saved_at: payload.saved_at })
     } catch (e) {
       toast(e instanceof Error ? e.message : monitorT('loadFailed'), 'error')
     } finally {
@@ -112,7 +122,6 @@ export default function MonitorUniversePage() {
     load()
   }, [])
 
-  // 点击搜索框外部时收起下拉
   useEffect(() => {
     const onClickAway = (e: MouseEvent) => {
       if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
@@ -123,7 +132,6 @@ export default function MonitorUniversePage() {
     return () => document.removeEventListener('mousedown', onClickAway)
   }, [])
 
-  // 防抖搜索
   useEffect(() => {
     const q = searchQuery.trim()
     if (searchTimer.current) clearTimeout(searchTimer.current)
@@ -200,43 +208,46 @@ export default function MonitorUniversePage() {
     }
   }
 
-  const pickSignal = async (item: MonitorUniverseItem, signal: MonitorSignal) => {
-    if (mutating || signal === item.monitor_signal) return
-    setMutating(true)
-    try {
-      applyList(await monitorUniverseApi.updateSignal(item.id, signal))
-      toast(
-        monitorT('signalUpdated', {
-          name: item.name,
-          symbol: item.symbol,
-          signal: monitorT(`signals.${signal}`),
-        }),
-        'success',
-      )
-    } catch (e) {
-      toast(e instanceof Error ? e.message : monitorT('signalUpdateFailed'), 'error')
-    } finally {
-      setMutating(false)
-    }
-  }
-
   const toggleSelected = (id: number) => {
     setSelected(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]))
   }
 
   const allVisibleSelected = items.length > 0 && items.every(i => selected.includes(i.id))
 
-  const ruleStatus = (item: MonitorUniverseItem): { key: string; tone: string } => {
-    if (item.rule_id == null) return { key: 'status.missing', tone: 'text-muted-foreground' }
-    if (isTodayUtc(item.rule_last_trigger_at)) {
-      if (item.rule_last_hit_notify_success === false)
-        return { key: 'status.capturedPushFailed', tone: 'text-red-600 dark:text-red-400' }
-      return { key: 'status.capturedToday', tone: 'text-emerald-600 dark:text-emerald-400' }
+  const savePriceThreshold = async (item: MonitorUniverseItem, raw: string) => {
+    const trimmed = raw.trim()
+    if (!trimmed) return
+    const num = Number(trimmed)
+    if (!Number.isFinite(num) || num <= 0) {
+      toast(monitorT('priceThresholdInvalid'), 'error')
+      return
     }
-    if (item.rule_enabled) return { key: 'status.active', tone: 'text-primary' }
-    if (item.rule_last_hit_notify_success === false)
-      return { key: 'status.disabledPushFailed', tone: 'text-red-600 dark:text-red-400' }
-    return { key: 'status.disabled', tone: 'text-amber-600 dark:text-amber-400' }
+    if (item.price_threshold != null && Math.abs(item.price_threshold - num) < 1e-9) return
+    if (mutating) return
+    setMutating(true)
+    try {
+      applyList(await monitorUniverseApi.updatePriceThreshold(item.id, num))
+      toast(
+        monitorT('priceThresholdSaved', { name: item.name, symbol: item.symbol }),
+        'success',
+      )
+    } catch (e) {
+      toast(e instanceof Error ? e.message : monitorT('priceThresholdSaveFailed'), 'error')
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  const ruleStatus = (item: MonitorUniverseItem): { key: string; tone: string } => {
+    if (item.rule_last_trigger_at) {
+      if (item.rule_last_hit_notify_success === false)
+        return { key: 'status.priceTriggeredPushFailed', tone: 'text-red-600 dark:text-red-400' }
+      return { key: 'status.priceTriggered', tone: 'text-emerald-600 dark:text-emerald-400' }
+    }
+    if (item.price_threshold == null || item.rule_id == null)
+      return { key: 'status.pricePending', tone: 'text-muted-foreground' }
+    if (item.rule_enabled) return { key: 'status.priceWatching', tone: 'text-primary' }
+    return { key: 'status.pricePending', tone: 'text-muted-foreground' }
   }
 
   return (
@@ -249,7 +260,6 @@ export default function MonitorUniversePage() {
         <p className="text-[12px] text-muted-foreground">{monitorT('description')}</p>
       </div>
 
-      {/* 搜索添加 */}
       <div ref={searchBoxRef} className="relative">
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
@@ -300,12 +310,11 @@ export default function MonitorUniversePage() {
         )}
       </div>
 
-      {/* 列表 */}
       <div className="rounded-xl border border-border/60 bg-card overflow-hidden">
         <div className="flex items-center justify-between border-b border-border/40 px-4 py-2.5">
           <div className="text-[12px] text-muted-foreground">
             {monitorT('count', { count: items.length })}
-            <span className="ml-2 text-muted-foreground/70">{monitorT('maNote')}</span>
+            <span className="ml-2 text-muted-foreground/70">{monitorT('priceNote')}</span>
           </div>
           <Button
             variant="destructive"
@@ -339,9 +348,10 @@ export default function MonitorUniversePage() {
                 <th className="px-2 py-2 font-medium">{monitorT('columns.symbol')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.name')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.market')}</th>
-                <th className="px-2 py-2 font-medium">{monitorT('columns.condition')}</th>
+                <th className="px-2 py-2 font-medium">{monitorT('columns.monitorPrice')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.status')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.addedAt')}</th>
+                <th className="px-2 py-2 font-medium whitespace-nowrap">{monitorT('columns.triggerAt')}</th>
                 <th className="w-14 px-2 py-2" />
               </tr>
             </thead>
@@ -361,28 +371,30 @@ export default function MonitorUniversePage() {
                     <td className="px-2 py-2">{item.name}</td>
                     <td className="px-2 py-2 text-muted-foreground">{item.market}</td>
                     <td className="px-2 py-2">
-                      <Select
-                        value={item.monitor_signal}
-                        onValueChange={signal => pickSignal(item, signal)}
-                        disabled={mutating}
-                      >
-                        <SelectTrigger
-                          className="h-7 w-[8.5rem] rounded-lg px-2 text-[12px]"
-                          title={monitorT('conditionHint')}
-                        >
-                          <span>{monitorT(`signals.${item.monitor_signal}`)}</span>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {signals.map(signal => (
-                            <SelectItem key={signal} value={signal} className="text-[12px]">
-                              {monitorT(`signals.${signal}`)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        step="any"
+                        min={0}
+                        className="h-7 w-[7.5rem] text-[12px] font-mono"
+                        placeholder={monitorT('priceThresholdPlaceholder')}
+                        title={monitorT('priceThresholdHint')}
+                        defaultValue={item.price_threshold ?? ''}
+                        key={`${item.id}-${item.price_threshold ?? 'empty'}`}
+                        disabled={mutating || Boolean(item.rule_last_trigger_at)}
+                        onBlur={e => savePriceThreshold(item, e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur()
+                          }
+                        }}
+                      />
                     </td>
                     <td className={`px-2 py-2 ${status.tone}`}>{monitorT(status.key)}</td>
                     <td className="px-2 py-2 text-muted-foreground">{formatDate(item.added_at)}</td>
+                    <td className="px-2 py-2 text-muted-foreground whitespace-nowrap font-mono text-[12px]">
+                      {formatTriggerAt(item.rule_last_trigger_at)}
+                    </td>
                     <td className="px-2 py-2 text-right">
                       <Button
                         variant="ghost"
@@ -403,7 +415,6 @@ export default function MonitorUniversePage() {
         )}
       </div>
 
-      {/* 自动保存状态 */}
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
         {monitorT('savedAt', { time: formatClock(savedAt) })}

@@ -30,9 +30,13 @@ class UniverseBatchRemovePayload(BaseModel):
 
 
 class UniverseSignalPayload(BaseModel):
-    monitor_signal: str = Field(
-        ...,
-        description="监控信号: above_5/below_5/above_10/below_10/above_20/below_20",
+    monitor_signal: str | None = Field(
+        None,
+        description="监控信号: above_5/.../price_above/hold_5",
+    )
+    price_threshold: float | None = Field(
+        None,
+        description="price_above 时: L1 现价严格大于该阈值(可带小数)",
     )
 
 
@@ -81,16 +85,24 @@ def remove_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{item_id}")
 def update_signal(item_id: int, payload: UniverseSignalPayload, db: Session = Depends(get_db)):
-    """修改条目的监控信号(确认下拉选择后自动保存),并同步其监控规则。"""
+    """修改条目的监控信号或价格阈值,并同步其监控规则。"""
     from src.web.errors import api_error
 
+    if payload.monitor_signal is None and payload.price_threshold is None:
+        raise api_error(400, "invalid_payload", "请提供 monitor_signal 或 price_threshold")
+    item = None
     try:
-        item = svc.update_item_signal(db, item_id, payload.monitor_signal)
+        if payload.monitor_signal is not None:
+            item = svc.update_item_signal(db, item_id, payload.monitor_signal)
+            if item is None:
+                raise api_error(404, "universe_item_not_found", "监控池条目不存在")
+        if payload.price_threshold is not None:
+            item = svc.update_item_price_threshold(db, item_id, payload.price_threshold)
+            if item is None:
+                raise api_error(404, "universe_item_not_found", "监控池条目不存在")
     except ValueError as exc:
-        logger.warning("监控池信号参数非法(item=%s): %s", item_id, exc)
+        logger.warning("监控池参数非法(item=%s): %s", item_id, exc)
         raise api_error(400, "invalid_monitor_signal", str(exc))
-    if item is None:
-        raise api_error(404, "universe_item_not_found", "监控池条目不存在")
     return {"updated": True, **svc.list_universe(db)}
 
 

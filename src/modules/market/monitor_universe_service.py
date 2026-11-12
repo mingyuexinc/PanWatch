@@ -6,7 +6,9 @@
 - 每日开盘前(09:10)与进程启动时重臂(re-arm)监控规则,
   使自动保存的集合成为次日盘中的监控股票集合。
 
-监控信号共 6 种: 现价上穿(下穿)当日 5/10/20 日均线。
+监控信号:
+- 6 种 MA 穿越: 现价上穿(下穿)当日 5/10/20 日均线;
+- price_above: L1 现价严格大于指定阈值(跨日直至首次触发,触发后不再监控)。
 - 上穿: 现价 >= 当日滚动 N 日线(沿用既有语义);
 - 下穿: 现价 < 当日滚动 N 日线(严格低于,不含等于)。
 
@@ -25,17 +27,19 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.platform.persistence.models import (
+    MaHoldDailyState,
     MonitorUniverseItem,
     PriceAlertHit,
     PriceAlertRule,
     Stock,
 )
+from src.modules.market.ma_hold.intraday_fetch import cn_trade_date
 
 MONITOR_MA_PERIODS = (5, 10, 20)
 DEFAULT_MONITOR_SIGNAL = "above_5"
 
 # 信号 → (方向, 均线周期, 比较op)。上穿含等于(现价>=MA),下穿严格低于(现价<MA)。
-MONITOR_SIGNALS: dict[str, tuple[str, int, str]] = {
+MONITOR_MA_CROSS_SIGNALS: dict[str, tuple[str, int, str]] = {
     f"{direction}_{period}": (
         direction,
         period,
@@ -45,9 +49,55 @@ MONITOR_SIGNALS: dict[str, tuple[str, int, str]] = {
     for period in MONITOR_MA_PERIODS
 }
 
+# 均线站稳（独立 job，不生成 ma 价格提醒规则）
+HOLD_MONITOR_SIGNALS: dict[str, int] = {
+    "hold_5": 5,
+}
+
+PRICE_MONITOR_SIGNAL = "price_above"
+MONITOR_POOL_DEFAULT_SIGNAL = PRICE_MONITOR_SIGNAL
+
+MONITOR_SIGNALS: dict[str, tuple[str, int, str] | int | str] = {
+    **MONITOR_MA_CROSS_SIGNALS,
+    **{k: v for k, v in HOLD_MONITOR_SIGNALS.items()},
+    PRICE_MONITOR_SIGNAL: "price",
+}
+
 # 规则名: "MA5上穿监控·贵州茅台(600519)"。历史遗留命名 "MA5监控·" 无方向段,同样识别。
 MONITOR_RULE_NAME_RE = re.compile(r"^MA(\d+)(上穿|下穿)?监控·")
+MONITOR_PRICE_RULE_NAME_RE = re.compile(r"^价格突破监控·")
 _SIGNAL_DIRECTION_LABEL = {"above": "上穿", "below": "下穿"}
+
+
+def is_hold_monitor_signal(signal: str) -> bool:
+    return str(signal or "").strip() in HOLD_MONITOR_SIGNALS
+
+
+def is_ma_cross_monitor_signal(signal: str) -> bool:
+    return str(signal or "").strip() in MONITOR_MA_CROSS_SIGNALS
+
+
+def is_price_monitor_signal(signal: str) -> bool:
+    return str(signal or "").strip() == PRICE_MONITOR_SIGNAL
+
+
+def normalize_price_threshold(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0 or not (v == v):  # NaN
+        return None
+    return round(v, 6)
+
+
+def require_price_threshold(value: Any) -> float:
+    v = normalize_price_threshold(value)
+    if v is None:
+        raise ValueError("价格阈值须为正数,可带小数")
+    return v
 
 
 def normalize_monitor_signal(value: Any) -> str:
@@ -94,10 +144,26 @@ def _rule_signal(rule: PriceAlertRule) -> str | None:
     except (TypeError, ValueError):
         return None
     op = str(cond.get("op") or "")
-    for key, (_, p, o) in MONITOR_SIGNALS.items():
+    for key, (_, p, o) in MONITOR_MA_CROSS_SIGNALS.items():
         if p == period and o == op:
             return key
     return None
+
+
+def _rule_price_condition(rule: PriceAlertRule) -> dict | None:
+    for item in (rule.condition_group or {}).get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "price" and str(item.get("op") or "").strip() == ">":
+            return item
+    return None
+
+
+def _rule_price_threshold(rule: PriceAlertRule) -> float | None:
+    cond = _rule_price_condition(rule)
+    if not cond:
+        return None
+    return normalize_price_threshold(cond.get("value"))
 
 
 def is_monitor_rule(rule: PriceAlertRule) -> bool:
@@ -107,20 +173,50 @@ def is_monitor_rule(rule: PriceAlertRule) -> bool:
     return _rule_signal(rule) is not None
 
 
+def is_price_monitor_rule(rule: PriceAlertRule) -> bool:
+    """识别系统托管的固定价格突破模板规则。"""
+    if not MONITOR_PRICE_RULE_NAME_RE.match(rule.name or ""):
+        return False
+    return _rule_price_threshold(rule) is not None
+
+
 def _monitor_rule_name(stock: Stock, signal: str) -> str:
-    direction, period, _ = MONITOR_SIGNALS[signal]
+    direction, period, _ = MONITOR_MA_CROSS_SIGNALS[signal]
     label = _SIGNAL_DIRECTION_LABEL[direction]
     return f"MA{period}{label}监控·{stock.name or stock.symbol}({stock.symbol})"
 
 
 def _template_condition_group(signal: str) -> dict[str, Any]:
-    _, period, op = MONITOR_SIGNALS[signal]
+    _, period, op = MONITOR_MA_CROSS_SIGNALS[signal]
     return {
         "op": "and",
         "items": [
             {"type": "ma", "op": op, "value": period},
         ],
     }
+
+
+def _price_monitor_rule_name(stock: Stock, threshold: float) -> str:
+    th = normalize_price_threshold(threshold)
+    label = th if th is not None else threshold
+    return f"价格突破监控·{stock.name or stock.symbol}({stock.symbol})>{label}"
+
+
+def _price_template_condition_group(threshold: float) -> dict[str, Any]:
+    th = require_price_threshold(threshold)
+    return {
+        "op": "and",
+        "items": [
+            {"type": "price", "op": ">", "value": th},
+        ],
+    }
+
+
+def _delete_rule_and_hits(db: Session, rule: PriceAlertRule) -> None:
+    db.query(PriceAlertHit).filter(PriceAlertHit.rule_id == rule.id).delete(
+        synchronize_session=False
+    )
+    db.delete(rule)
 
 
 def get_or_create_stock(
@@ -158,29 +254,56 @@ def list_universe(db: Session) -> dict[str, Any]:
         .order_by(MonitorUniverseItem.created_at.asc(), MonitorUniverseItem.id.asc())
         .all()
     )
-    rules = {
+    ma_rules = {
         rule.stock_id: rule
         for rule in db.query(PriceAlertRule).filter(
             PriceAlertRule.name.like("MA_%监控·%")
         )
         if is_monitor_rule(rule)
     }
+    price_rules = {
+        rule.stock_id: rule
+        for rule in db.query(PriceAlertRule).filter(
+            PriceAlertRule.name.like("价格突破监控·%")
+        )
+        if is_price_monitor_rule(rule)
+    }
+    template_rules = list(ma_rules.values()) + list(price_rules.values())
     # 最近一次命中的推送结果:推送失败时前端用红色状态提示,而不是静默丢失。
     latest_hit_by_rule: dict[int, PriceAlertHit] = {}
-    if rules:
+    if template_rules:
         for hit in (
             db.query(PriceAlertHit)
-            .filter(PriceAlertHit.rule_id.in_([r.id for r in rules.values()]))
+            .filter(PriceAlertHit.rule_id.in_([r.id for r in template_rules]))
             .order_by(PriceAlertHit.id.desc())
             .all()
         ):
             latest_hit_by_rule.setdefault(hit.rule_id, hit)
     rows: list[dict[str, Any]] = []
     saved_at: datetime | None = None
+    hold_today = cn_trade_date()
+    hold_rows = {
+        r.stock_id: r
+        for r in db.query(MaHoldDailyState)
+        .filter(MaHoldDailyState.trade_date == hold_today)
+        .all()
+    }
     for item in items:
         stock = item.stock
-        rule = rules.get(item.stock_id)
+        signal = normalize_monitor_signal(item.monitor_signal)
+        if is_ma_cross_monitor_signal(signal):
+            rule = ma_rules.get(item.stock_id)
+        elif is_price_monitor_signal(signal):
+            rule = price_rules.get(item.stock_id)
+        else:
+            rule = None
         last_hit = latest_hit_by_rule.get(rule.id) if rule else None
+        row_threshold = (
+            normalize_price_threshold(item.price_threshold)
+            if is_price_monitor_signal(signal)
+            else None
+        )
+        hold_st = hold_rows.get(item.stock_id) if is_hold_monitor_signal(signal) else None
         rows.append(
             {
                 "id": item.id,
@@ -189,7 +312,8 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "name": stock.name if stock else "",
                 "market": stock.market if stock else "",
                 "note": item.note or "",
-                "monitor_signal": normalize_monitor_signal(item.monitor_signal),
+                "monitor_signal": signal,
+                "price_threshold": row_threshold,
                 "added_at": _naive_utc(item.created_at).isoformat()
                 if item.created_at
                 else None,
@@ -210,6 +334,21 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "rule_last_hit_notify_error": (
                     last_hit.notify_error or "" if last_hit else ""
                 ),
+                "hold_last_trigger_at": _naive_utc(hold_st.last_trigger_at).isoformat()
+                if hold_st and hold_st.last_trigger_at
+                else None,
+                "hold_last_trigger_price": hold_st.last_trigger_price
+                if hold_st
+                else None,
+                "hold_last_hit_notify_success": (
+                    bool(hold_st.notify_success)
+                    if hold_st and hold_st.notify_success is not None
+                    else None
+                ),
+                "hold_last_hit_notify_error": (
+                    (hold_st.notify_error or "") if hold_st else ""
+                ),
+                "hold_phase": hold_st.phase if hold_st else None,
             }
         )
         item_updated = _naive_utc(item.updated_at) or _naive_utc(item.created_at)
@@ -219,7 +358,9 @@ def list_universe(db: Session) -> dict[str, Any]:
         "items": rows,
         "total": len(rows),
         "saved_at": saved_at.isoformat() if saved_at else None,
-        "signals": list(MONITOR_SIGNALS),
+        "signals": list(MONITOR_MA_CROSS_SIGNALS)
+        + [PRICE_MONITOR_SIGNAL]
+        + list(HOLD_MONITOR_SIGNALS),
     }
 
 
@@ -236,7 +377,9 @@ def add_to_universe(
     created = item is None
     if created:
         # 新条目默认上穿5日均线;monitor_signal 列的模型默认值兜底,显式赋值避免依赖列默认。
-        item = MonitorUniverseItem(stock_id=stock.id, monitor_signal=DEFAULT_MONITOR_SIGNAL)
+        item = MonitorUniverseItem(
+            stock_id=stock.id, monitor_signal=MONITOR_POOL_DEFAULT_SIGNAL
+        )
         db.add(item)
         db.commit()
         db.refresh(item)
@@ -276,29 +419,61 @@ def update_item_signal(
     )
     if item is None:
         return None
-    if normalize_monitor_signal(item.monitor_signal) != signal:
+    prev = normalize_monitor_signal(item.monitor_signal)
+    if prev != signal:
         item.monitor_signal = signal
+        if not is_price_monitor_signal(signal):
+            item.price_threshold = None
         db.commit()
+        if is_hold_monitor_signal(signal) or is_hold_monitor_signal(prev):
+            td = cn_trade_date()
+            db.query(MaHoldDailyState).filter(
+                MaHoldDailyState.stock_id == item.stock_id,
+                MaHoldDailyState.trade_date == td,
+            ).delete(synchronize_session=False)
+            db.commit()
     sync_monitor_rules(db)
     return item
 
 
-def sync_monitor_rules(db: Session) -> dict[str, int]:
-    """监控池 → MA 监控规则的双向同步(幂等,可安全重复调用)。
+def update_item_price_threshold(
+    db: Session, item_id: int, price_threshold: Any
+) -> MonitorUniverseItem | None:
+    """修改 price_above 信号的阈值并同步规则(变更会强制重臂)。"""
+    threshold = require_price_threshold(price_threshold)
+    item = (
+        db.query(MonitorUniverseItem)
+        .filter(MonitorUniverseItem.id == int(item_id))
+        .first()
+    )
+    if item is None:
+        return None
+    signal = normalize_monitor_signal(item.monitor_signal)
+    if not is_price_monitor_signal(signal):
+        raise ValueError("仅 price_above 信号可设置价格阈值")
+    prev = normalize_price_threshold(item.price_threshold)
+    if prev != threshold:
+        item.monitor_signal = PRICE_MONITOR_SIGNAL
+        item.price_threshold = threshold
+        db.commit()
+        sync_monitor_rules(db)
+    return item
 
-    - 池内股票缺规则 → 按该条目信号创建;
-    - 池内规则的 ma 条件与条目信号不一致(含历史遗留模板) → 重写条件与
-      名称并强制重臂(清除触发痕迹),旧信号当日的触发不阻塞新信号;
-    - 池内规则因"仅首次"在历史上触发过而停用,且最近一次触发不在今日
-      → 重臂,保证次日盘中恢复监控;最近一次触发就在今日的规则保持原样;
-    - 不在池内的模板规则 → 连同命中历史一起回收。
-    """
-    signal_by_stock = {
-        item.stock_id: normalize_monitor_signal(item.monitor_signal)
-        for item in db.query(MonitorUniverseItem).all()
-    }
-    today = _utc_now().date()
 
+def _rearm_rule(rule: PriceAlertRule) -> None:
+    rule.enabled = True
+    rule.last_trigger_at = None
+    rule.last_trigger_price = None
+    rule.trigger_count_today = 0
+    rule.trigger_date = ""
+
+
+def _sync_ma_rules_for_pool(
+    db: Session,
+    *,
+    items_by_stock: dict[int, MonitorUniverseItem],
+    today,
+) -> tuple[int, int, int]:
     created = rearmed = recycled = 0
     monitor_rules = [
         rule
@@ -309,10 +484,17 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
     ]
     rule_by_stock = {rule.stock_id: rule for rule in monitor_rules}
 
-    for stock_id, signal in signal_by_stock.items():
+    for stock_id, item in items_by_stock.items():
+        signal = normalize_monitor_signal(item.monitor_signal)
+        if not is_ma_cross_monitor_signal(signal):
+            rule = rule_by_stock.get(stock_id)
+            if rule is not None:
+                _delete_rule_and_hits(db, rule)
+                recycled += 1
+            continue
         rule = rule_by_stock.get(stock_id)
         if rule is None:
-            stock = db.query(Stock).filter(Stock.id == stock_id).first()
+            stock = item.stock or db.query(Stock).filter(Stock.id == stock_id).first()
             if stock is None:
                 continue
             db.add(
@@ -335,11 +517,7 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
         if condition_changed:
             rule.name = desired_name
             rule.condition_group = _template_condition_group(signal)
-            rule.enabled = True
-            rule.last_trigger_at = None
-            rule.last_trigger_price = None
-            rule.trigger_count_today = 0
-            rule.trigger_date = ""
+            _rearm_rule(rule)
             rearmed += 1
             continue
         if rule.name != desired_name:
@@ -349,19 +527,126 @@ def sync_monitor_rules(db: Session) -> dict[str, int]:
         if triggered_today:
             continue
         if not rule.enabled or rule.last_trigger_at is not None:
-            rule.enabled = True
-            rule.last_trigger_at = None
-            rule.last_trigger_price = None
+            _rearm_rule(rule)
             rearmed += 1
 
     for rule in monitor_rules:
-        if rule.stock_id in signal_by_stock:
+        if rule.stock_id in items_by_stock:
             continue
-        db.query(PriceAlertHit).filter(
-            PriceAlertHit.rule_id == rule.id
-        ).delete(synchronize_session=False)
-        db.delete(rule)
+        _delete_rule_and_hits(db, rule)
         recycled += 1
+    return created, rearmed, recycled
+
+
+def _sync_price_rules_for_pool(
+    db: Session,
+    *,
+    items_by_stock: dict[int, MonitorUniverseItem],
+) -> tuple[int, int, int]:
+    created = rearmed = recycled = 0
+    price_rules = [
+        rule
+        for rule in db.query(PriceAlertRule).filter(
+            PriceAlertRule.name.like("价格突破监控·%")
+        )
+        if is_price_monitor_rule(rule)
+    ]
+    rule_by_stock = {rule.stock_id: rule for rule in price_rules}
+
+    for stock_id, item in items_by_stock.items():
+        signal = normalize_monitor_signal(item.monitor_signal)
+        if not is_price_monitor_signal(signal):
+            rule = rule_by_stock.get(stock_id)
+            if rule is not None:
+                _delete_rule_and_hits(db, rule)
+                recycled += 1
+            continue
+        threshold = normalize_price_threshold(item.price_threshold)
+        if threshold is None:
+            rule = rule_by_stock.get(stock_id)
+            if rule is not None:
+                _delete_rule_and_hits(db, rule)
+                recycled += 1
+            continue
+        rule = rule_by_stock.get(stock_id)
+        if rule is None:
+            stock = item.stock or db.query(Stock).filter(Stock.id == stock_id).first()
+            if stock is None:
+                continue
+            db.add(
+                PriceAlertRule(
+                    stock_id=stock_id,
+                    name=_price_monitor_rule_name(stock, threshold),
+                    enabled=True,
+                    condition_group=_price_template_condition_group(threshold),
+                    market_hours_mode="trading_only",
+                    cooldown_minutes=0,
+                    max_triggers_per_day=1,
+                    repeat_mode="once",
+                    notify_channel_ids=[],
+                )
+            )
+            created += 1
+            continue
+        desired_name = _price_monitor_rule_name(rule.stock, threshold)
+        rule_th = _rule_price_threshold(rule)
+        condition_changed = rule_th != threshold
+        if condition_changed:
+            rule.name = desired_name
+            rule.condition_group = _price_template_condition_group(threshold)
+            _rearm_rule(rule)
+            rearmed += 1
+            continue
+        if rule.name != desired_name:
+            rule.name = desired_name
+        # 价格突破: 一旦触发即永久停止,跨日不得重臂
+        if rule.last_trigger_at is not None:
+            if rule.enabled:
+                rule.enabled = False
+            continue
+        if not rule.enabled and rule.last_trigger_at is None:
+            rule.enabled = True
+
+    for rule in price_rules:
+        if rule.stock_id in items_by_stock:
+            continue
+        _delete_rule_and_hits(db, rule)
+        recycled += 1
+    return created, rearmed, recycled
+
+
+def sync_monitor_rules(db: Session) -> dict[str, int]:
+    """监控池 → 模板监控规则的双向同步(幂等,可安全重复调用)。
+
+    MA 规则: 非当日触发次日重臂; 价格突破规则: 首次触发后永久停止直至改阈值。
+  """
+    pool_items = db.query(MonitorUniverseItem).all()
+    items_by_stock = {item.stock_id: item for item in pool_items}
+    today = _utc_now().date()
+
+    created = rearmed = recycled = 0
+
+    for stock_id, item in items_by_stock.items():
+        signal = normalize_monitor_signal(item.monitor_signal)
+        if not is_hold_monitor_signal(signal):
+            continue
+        for rule in db.query(PriceAlertRule).filter(
+            PriceAlertRule.stock_id == stock_id
+        ).all():
+            if is_monitor_rule(rule) or is_price_monitor_rule(rule):
+                _delete_rule_and_hits(db, rule)
+                recycled += 1
+
+    c, r, rc = _sync_ma_rules_for_pool(
+        db, items_by_stock=items_by_stock, today=today
+    )
+    created += c
+    rearmed += r
+    recycled += rc
+    c, r, rc = _sync_price_rules_for_pool(db, items_by_stock=items_by_stock)
+    created += c
+    rearmed += r
+    recycled += rc
 
     db.commit()
     return {"created": created, "rearmed": rearmed, "recycled": recycled}

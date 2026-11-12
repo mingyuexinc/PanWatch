@@ -454,7 +454,19 @@ class PriceAlertEngine:
                 db.commit()
                 # External channel I/O starts only after the hit and inbox event
                 # are durable; delivery failure cannot undo the business result.
-                notify_ok, notify_err = await self._send_notify(db, rule, ev.snapshot)
+                from src.modules.market.monitor_universe_notify import (
+                    send_monitor_pool_price_hit,
+                )
+                from src.modules.market.monitor_universe_service import (
+                    is_price_monitor_rule,
+                )
+
+                if is_price_monitor_rule(rule):
+                    notify_ok, notify_err = await send_monitor_pool_price_hit(
+                        db, rule, ev.snapshot
+                    )
+                else:
+                    notify_ok, notify_err = await self._send_notify(db, rule, ev.snapshot)
                 hit.notify_success = bool(notify_ok)
                 hit.notify_error = notify_err or ""
                 db.commit()

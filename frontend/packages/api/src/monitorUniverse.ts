@@ -11,6 +11,8 @@ export interface MonitorUniverseItem {
   market: string
   note: string
   monitor_signal: MonitorSignal
+  /** price_above 时用户设定的突破价(严格大于) */
+  price_threshold: number | null
   added_at: string | null
   updated_at: string | null
   rule_id: number | null
@@ -20,6 +22,12 @@ export interface MonitorUniverseItem {
   /** 最近一次命中的推送结果(null=尚未命中过) */
   rule_last_hit_notify_success: boolean | null
   rule_last_hit_notify_error: string
+  /** MA 站稳信号专用（hold_5） */
+  hold_last_trigger_at?: string | null
+  hold_last_trigger_price?: number | null
+  hold_last_hit_notify_success?: boolean | null
+  hold_last_hit_notify_error?: string
+  hold_phase?: string | null
 }
 
 export interface MonitorUniverseList {
@@ -67,6 +75,16 @@ export const monitorUniverseApi = {
     fetchAPI<MonitorUniverseMutationResult>(`/monitor-universe/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({ monitor_signal }),
+    }),
+  updatePriceThreshold: (id: number, price_threshold: number) =>
+    fetchAPI<MonitorUniverseMutationResult>(`/monitor-universe/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ monitor_signal: 'price_above', price_threshold }),
+    }),
+  ensurePriceSignal: (id: number) =>
+    fetchAPI<MonitorUniverseMutationResult>(`/monitor-universe/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ monitor_signal: 'price_above' }),
     }),
   search: (q: string) =>
     fetchAPI<StockSearchResult[]>(

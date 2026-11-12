@@ -284,6 +284,11 @@ def _migrate(engine):
             "monitor_signal",
             "ALTER TABLE monitor_universe_items ADD COLUMN monitor_signal TEXT NOT NULL DEFAULT 'above_5'",
         ),
+        (
+            "monitor_universe_items",
+            "price_threshold",
+            "ALTER TABLE monitor_universe_items ADD COLUMN price_threshold REAL",
+        ),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:

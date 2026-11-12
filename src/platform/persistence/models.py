@@ -1038,10 +1038,12 @@ class MonitorUniverseItem(Base):
         Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
     )
     note = Column(String, default="")
-    # 监控信号: above_5/below_5/above_10/below_10/above_20/below_20
+    # 监控信号: above_5/below_5/above_10/below_10/above_20/below_20/price_above
     monitor_signal = Column(
         String, nullable=False, default="above_5", server_default="above_5"
     )
+    # price_above 信号专用: L1 现价严格大于该阈值时触发(一次即止,跨日有效)
+    price_threshold = Column(Float, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
