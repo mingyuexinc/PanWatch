@@ -7,6 +7,8 @@ import { Input } from '@panwatch/base-ui/components/ui/input'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 
 const SEARCH_DEBOUNCE_MS = 400
+/** 与后端价格提醒定时扫描间隔对齐(仅交易日轮询) */
+const LIST_POLL_MS = 60_000
 const PRICE_SIGNAL = 'price_above'
 
 function parseServerDate(iso: string): Date {
@@ -61,6 +63,7 @@ export default function MonitorUniversePage() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState<MonitorUniverseItem[]>([])
   const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [cnTradingDay, setCnTradingDay] = useState(false)
   const [mutating, setMutating] = useState(false)
   const [selected, setSelected] = useState<number[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -70,6 +73,7 @@ export default function MonitorUniversePage() {
   const searchTimer = useRef<ReturnType<typeof setTimeout>>()
   const searchBoxRef = useRef<HTMLDivElement>(null)
   const migratedRef = useRef(false)
+  const mutatingRef = useRef(false)
 
   const symbolsInUniverse = useMemo(
     () => new Set(items.map(i => `${i.market}:${i.symbol}`)),
@@ -79,9 +83,13 @@ export default function MonitorUniversePage() {
   const applyList = (payload: {
     items: MonitorUniverseItem[]
     saved_at: string | null
+    cn_trading_day?: boolean
   }) => {
     setItems(payload.items || [])
     setSavedAt(payload.saved_at)
+    if (payload.cn_trading_day !== undefined) {
+      setCnTradingDay(Boolean(payload.cn_trading_day))
+    }
     setSelected(prev => prev.filter(id => (payload.items || []).some(i => i.id === id)))
   }
 
@@ -101,26 +109,61 @@ export default function MonitorUniversePage() {
     return latest
   }
 
-  const load = async () => {
-    setLoading(true)
+  const load = async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const payload = await monitorUniverseApi.list()
       let rows = payload.items || []
-      if (!migratedRef.current) {
+      if (!migratedRef.current && !silent) {
         migratedRef.current = true
         rows = await migrateLegacySignals(rows)
       }
-      applyList({ items: rows, saved_at: payload.saved_at })
+      applyList({
+        items: rows,
+        saved_at: payload.saved_at,
+        cn_trading_day: payload.cn_trading_day,
+      })
     } catch (e) {
-      toast(e instanceof Error ? e.message : monitorT('loadFailed'), 'error')
+      if (!silent) {
+        toast(e instanceof Error ? e.message : monitorT('loadFailed'), 'error')
+      }
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => {
-    load()
+    void load()
   }, [])
+
+  useEffect(() => {
+    mutatingRef.current = mutating
+  }, [mutating])
+
+  useEffect(() => {
+    if (!cnTradingDay) return
+
+    const silentRefresh = () => {
+      if (document.visibilityState !== 'visible') return
+      if (mutatingRef.current) return
+      void load({ silent: true })
+    }
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        silentRefresh()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    const timer = window.setInterval(silentRefresh, LIST_POLL_MS)
+
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [cnTradingDay])
 
   useEffect(() => {
     const onClickAway = (e: MouseEvent) => {
@@ -238,16 +281,33 @@ export default function MonitorUniversePage() {
     }
   }
 
-  const ruleStatus = (item: MonitorUniverseItem): { key: string; tone: string } => {
-    if (item.rule_last_trigger_at) {
+  const triggerStatus = (item: MonitorUniverseItem): { key: string; tone: string } => {
+    if (item.is_triggered || item.rule_last_trigger_at) {
       if (item.rule_last_hit_notify_success === false)
-        return { key: 'status.priceTriggeredPushFailed', tone: 'text-red-600 dark:text-red-400' }
-      return { key: 'status.priceTriggered', tone: 'text-emerald-600 dark:text-emerald-400' }
+        return { key: 'triggerStatus.triggeredPushFailed', tone: 'text-red-600 dark:text-red-400' }
+      return { key: 'triggerStatus.triggered', tone: 'text-emerald-600 dark:text-emerald-400' }
     }
-    if (item.price_threshold == null || item.rule_id == null)
-      return { key: 'status.pricePending', tone: 'text-muted-foreground' }
-    if (item.rule_enabled) return { key: 'status.priceWatching', tone: 'text-primary' }
-    return { key: 'status.pricePending', tone: 'text-muted-foreground' }
+  return { key: 'triggerStatus.notTriggered', tone: 'text-muted-foreground' }
+  }
+
+  const monitorHealthTone = (health: string | null | undefined): string => {
+    switch (health) {
+      case 'ok':
+        return 'text-primary'
+      case 'data_source':
+      case 'data_format':
+      case 'scan_round':
+      case 'engine':
+        return 'text-amber-600 dark:text-amber-400'
+      default:
+        return 'text-muted-foreground'
+    }
+  }
+
+  const monitorHealthLabel = (item: MonitorUniverseItem): string => {
+    const h = item.monitor_health
+    if (!h) return monitorT('health.na')
+    return monitorT(`health.${h}`)
   }
 
   return (
@@ -349,7 +409,8 @@ export default function MonitorUniversePage() {
                 <th className="px-2 py-2 font-medium">{monitorT('columns.name')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.market')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.monitorPrice')}</th>
-                <th className="px-2 py-2 font-medium">{monitorT('columns.status')}</th>
+                <th className="px-2 py-2 font-medium">{monitorT('columns.triggered')}</th>
+                <th className="px-2 py-2 font-medium">{monitorT('columns.monitorHealth')}</th>
                 <th className="px-2 py-2 font-medium">{monitorT('columns.addedAt')}</th>
                 <th className="px-2 py-2 font-medium whitespace-nowrap">{monitorT('columns.triggerAt')}</th>
                 <th className="w-14 px-2 py-2" />
@@ -357,7 +418,7 @@ export default function MonitorUniversePage() {
             </thead>
             <tbody>
               {items.map(item => {
-                const status = ruleStatus(item)
+                const trigger = triggerStatus(item)
                 return (
                   <tr key={item.id} className="border-b border-border/20 last:border-0">
                     <td className="px-4 py-2">
@@ -390,7 +451,13 @@ export default function MonitorUniversePage() {
                         }}
                       />
                     </td>
-                    <td className={`px-2 py-2 ${status.tone}`}>{monitorT(status.key)}</td>
+                    <td className={`px-2 py-2 ${trigger.tone}`}>{monitorT(trigger.key)}</td>
+                    <td
+                      className={`px-2 py-2 ${monitorHealthTone(item.monitor_health)}`}
+                      title={item.monitor_health_at ? String(item.monitor_health_at) : undefined}
+                    >
+                      {monitorHealthLabel(item)}
+                    </td>
                     <td className="px-2 py-2 text-muted-foreground">{formatDate(item.added_at)}</td>
                     <td className="px-2 py-2 text-muted-foreground whitespace-nowrap font-mono text-[12px]">
                       {formatTriggerAt(item.rule_last_trigger_at)}

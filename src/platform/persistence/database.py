@@ -289,6 +289,16 @@ def _migrate(engine):
             "price_threshold",
             "ALTER TABLE monitor_universe_items ADD COLUMN price_threshold REAL",
         ),
+        (
+            "price_alert_rules",
+            "monitor_health",
+            "ALTER TABLE price_alert_rules ADD COLUMN monitor_health TEXT",
+        ),
+        (
+            "price_alert_rules",
+            "monitor_health_at",
+            "ALTER TABLE price_alert_rules ADD COLUMN monitor_health_at DATETIME",
+        ),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:

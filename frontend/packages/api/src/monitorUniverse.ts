@@ -22,6 +22,11 @@ export interface MonitorUniverseItem {
   /** 最近一次命中的推送结果(null=尚未命中过) */
   rule_last_hit_notify_success: boolean | null
   rule_last_hit_notify_error: string
+  /** 是否已触发价格突破 */
+  is_triggered: boolean
+  /** ok | data_source | data_format | scan_round | engine */
+  monitor_health: string | null
+  monitor_health_at: string | null
   /** MA 站稳信号专用（hold_5） */
   hold_last_trigger_at?: string | null
   hold_last_trigger_price?: number | null
@@ -34,6 +39,8 @@ export interface MonitorUniverseList {
   items: MonitorUniverseItem[]
   total: number
   saved_at: string | null
+  /** 今日是否为 A 股交易日(与后端定时扫描门控一致) */
+  cn_trading_day?: boolean
   /** 可选监控信号目录(按 上穿5/10/20 → 下穿5/10/20 排序) */
   signals: MonitorSignal[]
 }
@@ -46,6 +53,7 @@ export interface MonitorUniverseMutationResult {
   items: MonitorUniverseItem[]
   total: number
   saved_at: string | null
+  cn_trading_day?: boolean
   signals: MonitorSignal[]
 }
 

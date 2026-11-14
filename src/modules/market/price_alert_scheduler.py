@@ -7,9 +7,20 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from src.modules.market.monitor_universe_health import (
+    touch_engine_scan_failed,
+    touch_engine_scan_ok,
+)
 from src.modules.market.price_alert_engine import ENGINE
+from src.platform.marketdata.models import MarketCode
+from src.platform.scheduling.trading_calendar import is_trading_day
 
 logger = logging.getLogger(__name__)
+
+
+def scheduled_scan_allowed() -> bool:
+    """定时扫描是否执行: 当前以 A 股交易日为准(非交易日整轮跳过,不拉行情)。"""
+    return is_trading_day(MarketCode.CN)
 
 
 class PriceAlertScheduler:
@@ -24,7 +35,12 @@ class PriceAlertScheduler:
             return
         self._running = True
         try:
+            if not scheduled_scan_allowed():
+                touch_engine_scan_ok()
+                logger.debug("[价格提醒] A股非交易日,跳过本轮定时扫描")
+                return
             result = await ENGINE.scan_once()
+            touch_engine_scan_ok()
             triggered = result.get("triggered", 0)
             # 实际触发了告警才是业务事件,否则只是心跳。
             level = logging.INFO if triggered else logging.DEBUG
@@ -36,6 +52,7 @@ class PriceAlertScheduler:
                 result.get("skipped", 0),
             )
         except Exception as e:
+            touch_engine_scan_failed(str(e))
             logger.exception(f"[价格提醒] 扫描异常: {e}")
         finally:
             self._running = False
@@ -46,6 +63,7 @@ class PriceAlertScheduler:
         )
 
     def start(self):
+        touch_engine_scan_ok()
         self.scheduler.add_job(
             self._scan_job,
             "interval",

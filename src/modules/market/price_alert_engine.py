@@ -18,6 +18,13 @@ from src.platform.marketdata.models import MarketCode, MARKETS
 from src.platform.persistence.database import SessionLocal
 from src.platform.persistence.models import NotifyChannel, PriceAlertHit, PriceAlertRule, Stock
 from src.platform.language import resolve_report_language
+from src.modules.market.monitor_universe_health import (
+    MONITOR_HEALTH_DATA_FORMAT,
+    classify_scan_item,
+    persist_rule_health,
+    quote_price_is_valid,
+)
+from src.modules.market.monitor_universe_service import is_price_monitor_rule
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +107,24 @@ class RuleEvalResult:
     matched: bool
     hits: list[dict]
     snapshot: dict
+
+
+def _record_price_monitor_health(
+    rule: PriceAlertRule,
+    *,
+    status: str,
+    reason: str = "",
+    quote: dict | None,
+    now: datetime,
+) -> None:
+    if not is_price_monitor_rule(rule):
+        return
+    if quote is not None and status not in ("no_quote", "no_stock"):
+        if not quote_price_is_valid(quote):
+            persist_rule_health(rule, MONITOR_HEALTH_DATA_FORMAT, at=now)
+            return
+    health = classify_scan_item(status=status, reason=reason, quote=quote)
+    persist_rule_health(rule, health, at=now)
 
 
 class PriceAlertEngine:
@@ -389,33 +414,67 @@ class PriceAlertEngine:
 
             for rule in rules:
                 stock = rule.stock
-                if not stock:
-                    skipped += 1
-                    items.append({"rule_id": rule.id, "status": "no_stock"})
-                    continue
-                market = _to_market(stock.market)
-                quote = quote_map.get((market.value, stock.symbol))
-                if not quote:
-                    skipped += 1
-                    items.append({"rule_id": rule.id, "status": "no_quote"})
-                    continue
+                quote: dict | None = None
+                try:
+                    if not stock:
+                        skipped += 1
+                        items.append({"rule_id": rule.id, "status": "no_stock"})
+                        _record_price_monitor_health(
+                            rule, status="no_stock", quote=None, now=now
+                        )
+                        continue
+                    market = _to_market(stock.market)
+                    quote = quote_map.get((market.value, stock.symbol))
+                    if not quote:
+                        skipped += 1
+                        items.append({"rule_id": rule.id, "status": "no_quote"})
+                        _record_price_monitor_health(
+                            rule, status="no_quote", quote=None, now=now
+                        )
+                        continue
 
-                can, reason = self._can_trigger(
-                    rule, now, bypass_market_hours=bypass_market_hours
-                )
-                if not can:
-                    skipped += 1
-                    items.append({"rule_id": rule.id, "status": "gated", "reason": reason})
-                    continue
+                    can, reason = self._can_trigger(
+                        rule, now, bypass_market_hours=bypass_market_hours
+                    )
+                    if not can:
+                        skipped += 1
+                        items.append(
+                            {"rule_id": rule.id, "status": "gated", "reason": reason}
+                        )
+                        _record_price_monitor_health(
+                            rule, status="gated", reason=reason, quote=quote, now=now
+                        )
+                        continue
 
-                ev = await self.eval_rule(rule, quote)
-                if not ev.matched:
+                    if is_price_monitor_rule(rule) and not quote_price_is_valid(quote):
+                        skipped += 1
+                        items.append({"rule_id": rule.id, "status": "bad_price"})
+                        _record_price_monitor_health(
+                            rule, status="bad_price", quote=quote, now=now
+                        )
+                        continue
+
+                    ev = await self.eval_rule(rule, quote)
+                    if not ev.matched:
+                        skipped += 1
+                        items.append({"rule_id": rule.id, "status": "not_matched"})
+                        _record_price_monitor_health(
+                            rule, status="not_matched", quote=quote, now=now
+                        )
+                        continue
+                except Exception:
                     skipped += 1
-                    items.append({"rule_id": rule.id, "status": "not_matched"})
+                    items.append({"rule_id": rule.id, "status": "scan_error"})
+                    _record_price_monitor_health(
+                        rule, status="scan_error", quote=quote, now=now
+                    )
                     continue
 
                 if dry_run:
                     triggered += 1
+                    _record_price_monitor_health(
+                        rule, status="would_trigger", quote=quote, now=now
+                    )
                     items.append(
                         {
                             "rule_id": rule.id,
@@ -440,8 +499,14 @@ class PriceAlertEngine:
                     db.rollback()
                     skipped += 1
                     items.append({"rule_id": rule.id, "status": "duplicated"})
+                    _record_price_monitor_health(
+                        rule, status="duplicated", quote=quote, now=now
+                    )
                     continue
 
+                _record_price_monitor_health(
+                    rule, status="triggered", quote=quote, now=now
+                )
                 rule.last_trigger_at = now
                 rule.last_trigger_price = _safe_float(quote.get("current_price"))
                 rule.trigger_count_today = int(rule.trigger_count_today or 0) + 1
@@ -488,6 +553,11 @@ class PriceAlertEngine:
                         "notify_error": notify_err,
                     }
                 )
+
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
 
             return {
                 "total_rules": len(rules),

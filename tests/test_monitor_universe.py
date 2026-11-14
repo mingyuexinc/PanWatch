@@ -102,6 +102,8 @@ def test_list_universe_reports_signal_catalog_and_default(db):
         "hold_5",
     ]
     assert payload["saved_at"] is not None
+    assert "cn_trading_day" in payload
+    assert isinstance(payload["cn_trading_day"], bool)
 
 
 def test_list_universe_exposes_latest_hit_notify_result(db):

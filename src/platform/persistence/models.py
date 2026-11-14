@@ -963,6 +963,9 @@ class PriceAlertRule(Base):
     last_trigger_price = Column(Float, nullable=True)
     trigger_count_today = Column(Integer, default=0)
     trigger_date = Column(String, default="")  # YYYY-MM-DD
+    # 监控池价格模板规则：最近一次扫描健康态(五类)
+    monitor_health = Column(String, nullable=True)
+    monitor_health_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

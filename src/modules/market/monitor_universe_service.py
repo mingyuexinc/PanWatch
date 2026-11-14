@@ -26,6 +26,12 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from src.modules.market.monitor_universe_health import (
+    resolve_list_health,
+    stale_health_on_list,
+)
+from src.platform.marketdata.models import MarketCode
+from src.platform.scheduling.trading_calendar import is_trading_day
 from src.platform.persistence.models import (
     MonitorUniverseItem,
     PriceAlertHit,
@@ -279,6 +285,7 @@ def list_universe(db: Session) -> dict[str, Any]:
             latest_hit_by_rule.setdefault(hit.rule_id, hit)
     rows: list[dict[str, Any]] = []
     saved_at: datetime | None = None
+    engine_stale = stale_health_on_list(db)
     for item in items:
         stock = item.stock
         signal = normalize_monitor_signal(item.monitor_signal)
@@ -294,6 +301,18 @@ def list_universe(db: Session) -> dict[str, Any]:
             if is_price_monitor_signal(signal)
             else None
         )
+        triggered = bool(rule and rule.last_trigger_at)
+        monitor_health = None
+        if is_price_monitor_signal(signal):
+            monitor_health = resolve_list_health(
+                monitor_health=rule.monitor_health if rule else None,
+                monitor_health_at=rule.monitor_health_at if rule else None,
+                rule_enabled=bool(rule.enabled) if rule else False,
+                rule_id=rule.id if rule else None,
+                triggered=triggered,
+                price_threshold=row_threshold,
+                engine_stale=engine_stale,
+            )
         rows.append(
             {
                 "id": item.id,
@@ -324,6 +343,11 @@ def list_universe(db: Session) -> dict[str, Any]:
                 "rule_last_hit_notify_error": (
                     last_hit.notify_error or "" if last_hit else ""
                 ),
+                "is_triggered": triggered,
+                "monitor_health": monitor_health,
+                "monitor_health_at": _naive_utc(rule.monitor_health_at).isoformat()
+                if rule and rule.monitor_health_at
+                else None,
                 "hold_last_trigger_at": None,
                 "hold_last_trigger_price": None,
                 "hold_last_hit_notify_success": None,
@@ -338,6 +362,7 @@ def list_universe(db: Session) -> dict[str, Any]:
         "items": rows,
         "total": len(rows),
         "saved_at": saved_at.isoformat() if saved_at else None,
+        "cn_trading_day": is_trading_day(MarketCode.CN),
         "signals": list(MONITOR_MA_CROSS_SIGNALS)
         + [PRICE_MONITOR_SIGNAL]
         + list(HOLD_MONITOR_SIGNALS),
